@@ -3,8 +3,12 @@
  * wrote, the route's current user-layer models, and the freshly merged values.
  *
  * Hand edits (current ≠ snapshot while source stayed put) are hidden; when the
- * source moved too they become conflicts and are unchecked by default. Locked
- * fields never take part, and template-only models show up as removable.
+ * source moved too they become conflicts and are unchecked by default. A model
+ * the snapshot knows but the route no longer lists was removed by the user, so
+ * it is hidden rather than proposed again. A model with no snapshot was added
+ * outside the plugin (e.g. discovered on the Models page): fields the model
+ * does not set are gap-fill candidates, while values it already sets are
+ * conflicts. Locked fields never take part.
  */
 import type { FieldDiff, ModelDiff, ModelFieldName, PlannedModel } from '../shared/rpc.ts'
 import type { RawModel } from './domain.ts'
@@ -61,9 +65,11 @@ function updateFields(input: {
     const next = desired.fields[field]
     if (deepEqual(old, next)) continue
     if (!hasSnapshot) {
-      // First sighting of this route: current values are the user's, so a
-      // differing source value is a conflict until they confirm it.
-      conflicts += 1
+      // First sighting: a field the model already sets is the user's value, so
+      // a differing source value is a conflict until they confirm it. A field
+      // it does not set is a gap the source can fill, and the panel selects
+      // those by default.
+      if (old !== undefined) conflicts += 1
       fields.push({ field, old, new: next, provenance: desired.provenance[field] ?? 'source' })
       continue
     }
@@ -90,6 +96,9 @@ export function computeDiff(input: DiffInput): ComputedDiff {
   for (const desired of input.desired) {
     const current = currentById.get(desired.id)
     if (current === undefined) {
+      // The snapshot proves this model used to be on the route; its absence is
+      // a deliberate removal, so do not propose re-adding it on every check.
+      if (snapshotModels?.[desired.id] !== undefined) continue
       const checked = input.autoIncludeNew
       const row: ModelDiff = {
         id: desired.id,

@@ -312,6 +312,11 @@ export interface ApplyResult {
   revision: number
 }
 
+export interface SetAutoIncludeArgs {
+  route: string
+  autoIncludeNew: boolean
+}
+
 export interface LockArgs {
   route: string
   model: string
@@ -357,6 +362,7 @@ export interface RpcMethods {
   'binding.diff': { args: DiffArgs; result: DiffResult }
   'binding.apply': { args: ApplyArgs; result: ApplyResult }
   'binding.lock': { args: LockArgs; result: LockResult }
+  'binding.setAutoInclude': { args: SetAutoIncludeArgs; result: BindingView }
   'binding.unbind': { args: UnbindArgs; result: Record<string, never> }
   'route.separateKey': { args: { route: string }; result: SeparateKeyResult }
   'defaultModel.use': { args: DefaultModelUseArgs; result: DefaultModelUseResult }

@@ -126,6 +126,7 @@ export function CloneWizard(props: CloneWizardProps): ReactElement {
                 <span className="dmh-hint">{t('clone.autoInclude')}</span>
               </label>
             </div>
+            <div className="dmh-hint">{t('card.autoIncludeHint')}</div>
             <div className="dmh-row" style={{ marginTop: 6 }}>
               <input className="dmh-input" placeholder={t('clone.search')} value={state.search} onChange={event => update(key, current => ({ ...current, search: event.target.value }))} />
               <button type="button" className="dmh-button" onClick={() => toggleAll(true)}>{t('clone.selectAll')}</button>

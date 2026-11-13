@@ -36,6 +36,7 @@ import type {
   Protocol,
   RouteInfo,
   SeparateKeyResult,
+  SetAutoIncludeArgs,
   SourceRef,
   UnbindArgs,
 } from '../shared/rpc.ts'
@@ -552,14 +553,20 @@ export async function cloneApply(ctx: HostContext, args: CloneApplyArgs): Promis
 
   const snapshots = await readSnapshotFile(ctx)
   const prices = await readPriceFile(ctx)
-  for (const { choice, group } of writes) {
-    const models: Record<string, Partial<ModelFields>> = {}
-    for (const model of group.models) models[model.id] = definedFields(model.fields) as Partial<ModelFields>
-    snapshots.routes[choice.routeId] = { at: now, models }
+  for (const { choice, group, models } of writes) {
+    // Baseline only what was actually written: unselected plan models were
+    // never on the route, and a snapshot entry for them would later read as a
+    // model the user removed.
+    const plannedById = new Map(group.models.map(model => [model.id, model]))
+    const snapshotModels: Record<string, Partial<ModelFields>> = {}
     const priceModels: Record<string, Price> = {}
-    for (const model of group.models) {
-      if (model.price !== undefined) priceModels[model.id] = model.price
+    for (const written of models) {
+      const planned = plannedById.get(written.id)
+      if (planned === undefined) continue
+      snapshotModels[written.id] = definedFields(planned.fields) as Partial<ModelFields>
+      if (planned.price !== undefined) priceModels[written.id] = planned.price
     }
+    snapshots.routes[choice.routeId] = { at: now, models: snapshotModels }
     prices.routes[choice.routeId] = {
       fetchedAt: cached.plan.fetchedAt,
       online: cached.plan.online,
@@ -906,6 +913,17 @@ export async function bindingApply(ctx: HostContext, args: ApplyArgs): Promise<A
 // ---------------------------------------------------------------------------
 // Locks / unbind / cache / default model
 // ---------------------------------------------------------------------------
+
+export async function bindingSetAutoInclude(ctx: HostContext, args: SetAutoIncludeArgs): Promise<BindingView> {
+  const route = typeof args.route === 'string' ? args.route : ''
+  const binding = readBindings(ctx)[route]
+  if (binding === undefined) throw new RpcError('models-helper/not-bound', `"${route}" 尚未绑定更新来源`)
+  if (typeof args.autoIncludeNew !== 'boolean') throw new RpcError('models-helper/bad-request', 'autoIncludeNew 参数无效')
+  binding.autoIncludeNew = args.autoIncludeNew
+  await writeBinding(ctx, binding)
+  recentDiffs.delete(route)
+  return bindingView(binding)
+}
 
 export async function bindingLock(ctx: HostContext, args: LockArgs): Promise<LockResult> {
   const route = typeof args.route === 'string' ? args.route : ''

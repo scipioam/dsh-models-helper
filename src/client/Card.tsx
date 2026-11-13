@@ -97,6 +97,15 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
     }
   }
 
+  const setAutoInclude = async (next: boolean): Promise<void> => {
+    setBusy('auto-include')
+    setActionError(undefined)
+    const result = await api.call('binding.setAutoInclude', { route: provider.provider, autoIncludeNew: next })
+    setBusy(undefined)
+    if (result.ok) await reload()
+    else setActionError(result.error.message)
+  }
+
   const refreshLists = async (): Promise<void> => { await reload() }
 
   return (
@@ -158,10 +167,18 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
           <div className="dmh-muted">{t('card.boundTo', { source: sourceLabel(t, binding.source), template: binding.template })}</div>
           <div className="dmh-muted">
             {binding.lastSync === undefined ? t('time.never') : t('time.lastSync', { time: fmtTime(binding.lastSync, t) })}
-            {' · '}
-            {binding.autoIncludeNew ? t('card.autoInclude') : ''}
             {binding.locked.length > 0 ? ` · ${t('card.lockedCount', { count: binding.locked.length })}` : ''}
           </div>
+          <label className="dmh-check">
+            <input
+              type="checkbox"
+              checked={binding.autoIncludeNew}
+              disabled={busy !== undefined}
+              onChange={event => { void setAutoInclude(event.target.checked) }}
+            />
+            <span className="dmh-hint">{t('card.autoInclude')}</span>
+          </label>
+          <div className="dmh-hint">{t('card.autoIncludeHint')}</div>
         </div>
       )}
 

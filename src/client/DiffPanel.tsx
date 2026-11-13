@@ -15,12 +15,25 @@ function entryFor(mode: SelectionEntry['mode'], fields: readonly ModelFieldName[
   return { mode, fields: new Set(fields) }
 }
 
+/**
+ * Fields a conflict row may fill by default: the source has a value and the
+ * model does not set that field at all. Values the model already sets stay
+ * unchecked so a hand edit is never overwritten silently.
+ */
+export function gapFields(row: ModelDiff): ModelFieldName[] {
+  return row.fields.filter(field => field.old === undefined).map(field => field.field)
+}
+
 /** Default rows for the footer's "apply defaults" action. */
 export function defaultApplySelection(diff: BindingDiff): ApplySelection[] {
   const rows: ApplySelection[] = []
   for (const row of diff.added) rows.push({ id: row.id, mode: 'add' })
   for (const row of diff.updates) {
     const fields = row.fields.map(field => field.field)
+    if (fields.length > 0) rows.push({ id: row.id, mode: 'update', fields })
+  }
+  for (const row of diff.conflicts) {
+    const fields = gapFields(row)
     if (fields.length > 0) rows.push({ id: row.id, mode: 'update', fields })
   }
   return rows
@@ -30,8 +43,9 @@ function defaultSelection(diff: BindingDiff): Map<string, SelectionEntry> {
   const map = new Map<string, SelectionEntry>()
   for (const row of diff.added) map.set(row.id, entryFor('add', []))
   for (const row of diff.updates) map.set(row.id, entryFor('update', row.fields.map(field => field.field)))
-  // Conflicts and removals start unchecked (DESIGN §5).
-  for (const row of diff.conflicts) map.set(row.id, entryFor('update', []))
+  // Conflicts default to filling only fields the model does not set; values it
+  // already sets stay unchecked (DESIGN §5).
+  for (const row of diff.conflicts) map.set(row.id, entryFor('update', gapFields(row)))
   for (const row of diff.removed) map.set(row.id, entryFor('remove', []))
   for (const row of diff.candidates) map.set(row.id, entryFor('add', []))
   return map

@@ -87,6 +87,49 @@ describe('computeDiff', () => {
     expect(result.removed.map(row => [row.id, row.defaultChecked])).toEqual([['gone', false]])
   })
 
+  it('hides a model the user removed even though the source still has it', () => {
+    const result = computeDiff({
+      desired: [planned('removed-by-user', { contextWindow: 1000 })],
+      current: [],
+      snapshot: snapshot({ 'removed-by-user': { contextWindow: 1000 } }),
+      locks: [],
+      autoIncludeNew: true,
+    })
+    expect(result.added).toHaveLength(0)
+    expect(result.candidates).toHaveLength(0)
+  })
+
+  it('fills fields a model does not set, even without a snapshot', () => {
+    const result = computeDiff({
+      desired: [planned('discovered', { contextWindow: 1000, compat: { supportsTemperature: false } })],
+      current: [current('discovered', { contextWindow: 1000 })],
+      snapshot: snapshot({}),
+      locks: [],
+      autoIncludeNew: false,
+    })
+    expect(result.updates).toHaveLength(1)
+    expect(result.updates[0]?.defaultChecked).toBe(true)
+    expect(result.updates[0]?.fields).toEqual([
+      { field: 'compat', old: undefined, new: { supportsTemperature: false }, provenance: 'source' },
+    ])
+  })
+
+  it('keeps a set value as a conflict while still listing its gap fields', () => {
+    const result = computeDiff({
+      desired: [planned('discovered', { contextWindow: 2000, compat: { supportsTemperature: false } })],
+      current: [current('discovered', { contextWindow: 1000 })],
+      snapshot: snapshot({}),
+      locks: [],
+      autoIncludeNew: false,
+    })
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]?.defaultChecked).toBe(false)
+    expect(result.conflicts[0]?.fields.map(field => [field.field, field.old === undefined])).toEqual([
+      ['contextWindow', false],
+      ['compat', true],
+    ])
+  })
+
   it('skips locked fields entirely', () => {
     const result = computeDiff({
       desired: [planned('m', { contextWindow: 2000 })],
