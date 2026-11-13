@@ -14,7 +14,7 @@
 | 2 | 内置路由写 `models` 列表会整体替换目录，条目按同 id 继承目录参数；**目录外的 id 什么也继承不到**（容量回落 1M/128K、仅文本、无推理、无 compat）。 | 手工追加新模型等于从零配置。 |
 | 3 | 目录外模型需要路由级唯一协议；混合协议目录（opencode-go：anthropic-messages 5 / openai-completions 21 / openai-responses 5 / gemini 1；openrouter：anthropic-messages 20 / openai-completions 383）对新模型直接报 `needs an api`，设路由级 `api` 又会改写所有模型。 | 内置路由上实际无法追加新模型。 |
 | 4 | 自定义路由一条只能一种协议、参数全手填；pi-ai 目录里的部分 compat 被列为 *withheld*（如 `supportsMidConvoSystemMessages`、`sessionAffinityFormat`、`openRouterRouting`），自定义路由上写会被拒绝。 | 改用自定义供应商 = 参数全丢 + 少量原生特性永久丢失。 |
-| 5 | pi-ai 目录有 `cost`，但 DSH 显式置零、无任何消费者。`TokenUsage` 提供互斥的 input / output / cacheRead / cacheWrite。 | 价格只能由插件自存自用；花费估算可行。 |
+| 5 | pi-ai 目录有 `cost`，但 DSH 显式置零、无任何消费者。`TokenUsage` 提供互斥的 input / output / cacheRead / cacheWrite。 | 价格只能由插件自存自用（本地价格快照，见 §7）；花费估算可行。 |
 | 6 | models.dev/api.json 是 pi-ai 目录的上游，实时可取（opencode-go 有 40 个，内置目录 32 个）；OpenRouter `/api/v1/models` 公开可取（共 475 个）。 | 有可靠的新鲜数据源。 |
 
 ## 2. 目标与非目标
@@ -23,13 +23,14 @@
 
 1. 一键把内置供应商克隆为**绑定了参数来源**的自定义供应商（复用同一 API key 引用，按协议组拆分），参数自动补全。
 2. 已有自定义供应商可事后绑定参数来源。
-3. 手动"检查更新 → 字段级差异 → 勾选应用"；自动识别并保护手改值。
-4. 每个模型的单价展示与编辑；估算每轮、会话（含子智能体）花费并显示在对话界面。
+3. 手动"检查更新 → 字段级差异 → 勾选应用"；每次检查更新都强制联网获取最新数据，并刷新本地价格快照；自动识别并保护手改值。
+4. 每个模型的单价展示与编辑（本地价格快照，可手动覆盖、可恢复来源价）；估算每轮、会话（含子智能体）花费并显示在对话界面；估算只读本地价格表，不联网。
 
 **非目标（v1）**
 
 - 不修改内置供应商路由本身；克隆后原路由保留不动。
-- 不做定时自动写入；不支持多币种（统一 USD / 百万 token）。
+- 不做定时自动写入或后台自动检查；界面不展示"有更新"类被动提示（差异只在用户点「检查更新」后计算）。
+- 不支持多币种（统一 USD / 百万 token）。
 - 只处理 `llm-pi-ai` 命名空间；`llm-deepseek`、DeepSeek 账号不在范围内。
 - 无法恢复自定义路由上被 withheld 的 compat。
 
@@ -42,6 +43,8 @@
 - **协议组（Protocol group）**：来源中 `(api, baseURL)` 相同的模型集合；一个协议组对应一条自定义路由。
 - **绑定（Binding）**：一条自定义路由 ↔ `{ source, template, group, autoIncludeNew, priceOverrides, locks }`。
 - **快照（Snapshot）**：上次应用时插件写入的每个模型、每个字段的值，用于识别手改。
+- **价格快照（Price snapshot）**：最近一次克隆或检查更新时从来源取到的单价，连同数据获取时间存数据目录；界面和花费估算只读它，渲染时不联网。
+- **价格覆盖（Price override）**：用户手动改过的单价，存插件配置，优先于快照；清除后回到快照价。
 
 ### 3.1 SourceModel（标准化记录）
 
@@ -93,7 +96,7 @@ interface Price {
 | `reasoningEfforts` | 锁定/手改 → 模板同 id `thinkingLevelMap` → 同系列模板 → 来源档位推导 → 来源 `reasoning:false` 时写 `false` | 模型 |
 | `compat` | 锁定/手改 → 模板同 id（仅 offered 字段）→ 同协议同系列模板 → 不写 | 模型（与路由级相同的字段省略） |
 | 路由 `compat` | 协议组内全部模板模型 offered compat 的公共交集 | 路由 |
-| 价格 | 绑定价格覆盖 → 来源 → 模板 `cost` | 插件配置（不写入 llm-pi-ai） |
+| 价格 | 手动覆盖 → 价格快照（克隆/检查更新时写入）→ 模板 `cost`（离线兜底）→ 无价格不显示 | 覆盖存插件配置、快照存数据目录；均不写入 llm-pi-ai |
 
 补充规则：
 
@@ -123,65 +126,88 @@ interface Price {
 - revision 冲突（另一标签页或手改 `cordis.patch.yml`）→ 提示并重新计算差异。
 - `autoIncludeNew` 默认：协议组模型数 ≤ 80 时开，否则关（OpenRouter 关）。
 
+### 5.1 检查更新一定联网
+
+- **每次点击都发起请求**：向来源发送条件请求（`ETag` / `Last-Modified`；304 视为成功，仍算一次有效同步），不复用未过期的缓存来跳过请求。同一来源同一时刻只有一个在途请求；本次完成后再次点击会重新请求。
+- **成功**：用新数据计算差异，并刷新价格快照——该绑定协议组内全部来源模型（含未纳入的候选）的来源价与数据获取时间写入；已有手动覆盖的价格不动，只在面板提示"来源价已变化"；来源已下架但仍在路由中的模型保留旧价格。
+- **失败**：回退最近一次缓存，面板标注「在线获取失败」、失败原因与数据获取时间，差异和价格基于该缓存数据（价格快照按缓存数据写入，值通常不变）；没有任何缓存时只报错，不生成差异。
+- **价格不参与勾选**：价格快照在检查更新完成时写入（在线成功用新数据，回退用缓存；它只是插件本地的派生数据，不写 `llm-pi-ai`）；「应用」只写模型配置与模型字段快照，不改价格。想固定旧价时用「价格覆盖」。
+- **时间口径**：「上次同步时间」= 最近一次成功的克隆/检查更新；「数据获取时间」= 本次实际使用的来源数据是什么时候取到的（在线成功 = 现在，回退 = 缓存时间）。两者分别记录、分别展示。
+
 ## 6. 用户流程
 
 ### 6.1 克隆内置供应商
 
 1. 模型页内置供应商卡片 →「克隆为自定义供应商」。
-2. 选来源：自动匹配同 id 的 models.dev 供应商；`openrouter` 额外提供"OpenRouter 官方"。模板默认就是该内置供应商。
+2. 选来源：自动匹配同 id 的 models.dev 供应商；`openrouter` 额外提供"OpenRouter 官方"。模板默认就是该内置供应商。打开向导即强制拉取来源数据（失败回退缓存并标注数据获取时间；无缓存时提示联网失败）。
 3. 协议组列表（显示模型数），默认全选；每组可取消、可改路由 id（预填 `<内置id>-<协议后缀>`，如 `opencode-go-chat`、`opencode-go-anthropic`、`opencode-go-responses`、`opencode-go-gemini`）与显示名（如 `OpenCode Go · Anthropic`）。
 4. 每组的模型勾选列表（搜索、全选/全不选）与"自动纳入新模型"开关。
-5. 确认 → 写入每条新路由（`api`、`baseURL`、`apiKeyEnv` 复用原路由引用、路由 compat、`models`）、写入绑定、记录快照。
+5. 确认 → 写入每条新路由（`api`、`baseURL`、`apiKeyEnv` 复用原路由引用、路由 compat、`models`）、写入绑定、记录模型字段快照与价格快照（协议组内全部来源模型的来源价与数据获取时间）。
 6. 若当前默认模型指向原路由且克隆中有同名模型 → 提示一键切换默认模型。原路由保留，已有会话不受影响。
 
 ### 6.2 绑定已有自定义供应商
 
-自定义供应商卡片 →「绑定参数来源」→ 选来源、模板、协议组 → 直接进入首次差异。
+自定义供应商卡片 →「绑定参数来源」→ 选来源、模板、协议组 → 强制拉取来源并写入价格快照 → 直接进入首次差异。
 
 ### 6.3 检查更新
 
-绑定卡片 →「检查更新」→ 差异面板（新增 / 候选 / 更新 / 冲突 / 已下架 分组，字段级 old → new，带来源标注）→ 勾选 →「应用」。页脚「全部检查更新」对所有绑定执行同一流程。
+1. 绑定卡片 →「检查更新」→ **强制联网**拉取最新来源数据（条件请求，见 §5.1）。
+2. 成功 → 用新数据计算差异并刷新价格快照；失败 → 回退最近缓存，面板标注「在线获取失败」、失败原因与数据获取时间，差异和价格基于该缓存数据（价格快照按缓存数据刷新）；没有任何缓存时只报错、不生成差异。
+3. 差异面板（新增 / 候选 / 更新 / 冲突 / 已下架 分组，字段级 old → new，带来源标注；价格变化作为只读分组展示）→ 勾选 →「应用」写 `llm-pi-ai` 与模型字段快照。
+4. 页脚「全部检查更新」对所有绑定执行同一流程：各来源只请求一次，结果复用于所有绑定。
+5. 上次同步时间取最近一次成功；数据获取时间按本次实际使用的数据来源单独记录并展示（见 §5.1）。
 
 ## 7. 价格与花费估算
 
 - **单位**：USD / 1M tokens；字段 input / output / cacheRead / cacheWrite，可选按输入上下文分段（tiers）。
-- **价格查找**（适用于任何路由，不限绑定）：绑定价格覆盖 → 绑定来源价格 → 模板/内置目录 `cost`（内置路由也能估算）→ 无价格显示 `—`。
+- **价格只在显式同步时从网上取**：克隆与检查更新会拉取来源价，写入数据目录下的**价格快照**（含来源价与数据获取时间）；之后界面和估算一律读本地，任何渲染路径都不联网。价格查找（适用于任何路由，不限绑定）：**手动覆盖（插件配置）→ 价格快照 → 模板/内置目录 `cost`（离线兜底）→ 无价格显示 `—`**。
+- **内置路由**：没有绑定来源，使用模板 `cost`（随 DSH 升级变化）；需要跟随来源价时克隆为自定义供应商。手工建的自定义路由同理，可绑定来源后获得价格快照。
+- **金额不持久化**：只持久化 token 用量；Client 每次渲染按当前本地价格表计算金额。修改覆盖、恢复来源价或检查更新刷新快照后，所有已显示的估算立即重算（不刷新页面、不联网）。
 - **单次调用花费** = input×p.in + output×p.out + cacheRead×p.cacheRead + cacheWrite×p.cacheWrite（`TokenUsage` 各项互斥）；分段按 input+cacheRead+cacheWrite 选档；缺 cacheRead/cacheWrite 单价时按 input 单价计。
-- **数据流**：Host 侧 session projection 纯折叠 `assistant/message` 的 usage，按 `(provider, model, tier)` 累计 token（不存金额，保持日志可重放）；经 `wire.view` 交给 Client，Client 用价格表算钱。价格修改后所有估算按新价格重算（不追溯当时价格——已知限制）。
+- **数据流**：Host 侧 session projection 纯折叠 `assistant/message` 的 usage，按 `(provider, model, tier)` 累计 token（不存金额，保持日志可重放）；经 `wire.view` 交给 Client。Client 持有一份内存价格表（由 Host 的本地价格表经 RPC 取得，价格写入后失效重取），按模型分项算钱。
 - **显示**：
   - `conversation.chat.turnTail`：每轮花费，悬停显示 输入/输出/缓存读/缓存写 明细。
   - `conversation.session.header.utilities`：会话累计（含子智能体会话），点开按模型分项。
 - **子智能体**：通过子会话列表聚合各子会话的投影结果。
+- **价格表界面**（M2）：卡片内展示每个模型的来源价、覆盖值、数据获取时间与来源；可编辑覆盖、可「恢复来源价」；修改立即写入插件配置并触发全界面重算。
+- **已知限制**：两次手动同步之间来源价的变化不会反映在估算里（价格可能陈旧，用数据获取时间提示用户）；不追溯历史价格。
 
 ## 8. 界面
 
 | 位置 | 内容 |
 |---|---|
-| `settings.models.provider-card`（key `llm-pi-ai`）· 内置供应商 | 「克隆为自定义供应商」；来源新鲜度提示（如"models.dev 有 8 个内置目录没有的模型"） |
-| 同上 · 已绑定的自定义供应商 | 来源徽标、上次同步时间、「检查更新」→ 差异面板、价格表（可覆盖 / 恢复来源价）、字段锁 |
-| 同上 · 未绑定的自定义供应商 | 「绑定参数来源」 |
-| `settings.models.footer` | 绑定汇总、「全部检查更新」、元数据缓存时间与「刷新」 |
+| `settings.models.provider-card`（key `llm-pi-ai`）· 内置供应商 | 「克隆为自定义供应商」；来源提示（只用缓存计算，渲染时不联网；无缓存时不显示） |
+| 同上 · 已绑定的自定义供应商 | 来源徽标、上次同步时间、「检查更新」→ 差异面板、价格表（来源价、覆盖、数据获取时间；可覆盖 / 恢复来源价）、字段锁 |
+| 同上 · 未绑定的自定义供应商 | 「绑定参数来源」；价格表（模板价 / 覆盖） |
+| `settings.models.footer` | 绑定汇总、「全部检查更新」、缓存数据获取时间与「刷新」（只刷新元数据缓存，不改价格快照） |
 | 对话区 | 每轮花费、会话累计（见 §7） |
 
 UI 遵循宿主主题 token（`--dsw-alias-*`）与 locale，中英文文案；不引用宿主 Client 包组件，控件自绘。
+
+**不做被动提示**：页面不主动计算或展示"有更新 / 有 N 个新模型"；差异只在用户点击「检查更新」后出现。价格与估算保持可见，并标注数据获取时间。
 
 ## 9. 架构
 
 ```
 Host（index.js）
-├─ SourceRegistry      拉取 + 缓存 models.dev / OpenRouter（原文缓存于数据目录 cache/，TTL 6h，可手动刷新）
+├─ SourceRegistry      拉取 models.dev / OpenRouter；只在显式动作（克隆、检查更新、页脚刷新）时联网，
+│                      条件请求，失败回退缓存；缓存不用于跳过显式同步
+├─ PriceStore          价格快照（数据目录，派生数据）与手动覆盖（插件配置）← 克隆/检查更新写入（回退时用缓存数据）
 ├─ TemplateCatalog     运行时读取已安装 pi-ai 目录（compat、thinkingLevelMap、cost）
 ├─ MergeEngine         纯函数：SourceModel × 模板 × 绑定 × 快照 → 期望配置 + 差异
 ├─ BindingStore        绑定与价格覆盖 → 插件自己的 Config（volatile 字段，settings.mutate 写入 profile 补丁）
-├─ SnapshotStore       快照 → 数据目录下的 JSON（派生缓存）
+├─ SnapshotStore       模型字段快照 → 数据目录下的 JSON（派生缓存）
 ├─ Writer              settings.mutate('llm-pi-ai', ops, revision)
-├─ CostProjection      sessionProjections 单元 + wire.view
+├─ CostProjection      sessionProjections 单元 + wire.view（只投影 token，不算钱）
 └─ RPC 端点            供 Client 调用（clone / bind / diff / apply / prices / refresh）
 Client（client.js，esbuild 由 JSX 打包）
-├─ provider-card 面板 / 克隆向导 / 差异面板 / 价格表
+├─ provider-card 面板 / 克隆向导 / 差异面板 / 价格表（读写同一份本地价格表）
 ├─ footer 汇总
-└─ turnTail、session header 花费显示
+├─ turnTail、session header 花费显示（按本地价格表实时计算，不联网）
+└─ 内存价格表：价格写入后失效重取，所有估算随之重算
 ```
+
+**网络边界**：任何页面渲染、差异展示、价格表展示与花费估算都只读本地数据（缓存 / 价格快照 / 插件配置 / 模板），不联网。联网只发生在用户显式动作：克隆、检查更新（含全部检查更新）、页脚「刷新」。页脚刷新只更新元数据缓存，不改价格快照；价格快照只随克隆与检查更新更新。
 
 ## 10. 风险与已知限制
 
@@ -189,9 +215,11 @@ Client（client.js，esbuild 由 JSX 打包）
 - **withheld compat 丢失**：例如 kimi-k3 的 mid-convo 系统消息、opencode 的 session affinity、OpenRouter 路由偏好；克隆路由上的这些模型会以用户角色提醒接收后续系统文本。
 - **推断值可能不准**：新模型的 compat/档位来自同系列推断，差异中明确标注。
 - **数据源误差**：models.dev / OpenRouter 的容量或价格可能有误；所有写入都经手动确认。
+- **价格可能陈旧**：价格只随克隆与检查更新刷新，两次同步之间来源价的变化不会反映；估算按本地价格快照计算，界面展示数据获取时间，用户可再次点「检查更新」刷新。
+- **离线行为**：检查更新/克隆失败时回退最近缓存，面板标注「在线获取失败」、失败原因与数据获取时间；无缓存时无法检查与更新价格。
 - **选择器重复**：原内置路由与克隆路由在模型选择器里并存。
 - **删除原路由会删 key**：若原路由的 `apiKeyEnv` 是模型页派生的 `<ROUTE>_API_KEY`，在模型页删除原路由会连带删除凭据，克隆路由随之失效；插件在原路由卡片上提示这一点。
-- **花费为估算**：按当前价格表计算，不追溯历史价格；不含网关额外费用（如 OpenRouter web search）。
+- **花费为估算**：按本地价格快照计算，不追溯历史价格；不含网关额外费用（如 OpenRouter web search）。
 
 ## 11. M0 技术验证结论（2026-11-13，DSH 0.2.2-rc.2）
 
@@ -206,13 +234,14 @@ Client（client.js，esbuild 由 JSX 打包）
 | 写插件自身配置 | ✅ | 同上，作用于本插件 namespace `models-helper`（字段需 `.volatile()`） |
 | 模型页挂载点 | ✅ 卡片内面板与页脚面板正常显示 | `settings.models.provider-card`（key `llm-pi-ai`）、`settings.models.footer` |
 | 来源可用性 | ✅ | models.dev：opencode-go 40 个（内置没有的 8 个），4 个协议组与模板一致（Anthropic 端点去掉 `/v1` 后与模板完全相同）；OpenRouter 官方：408 个支持工具调用的模型（内置没有的 13 个） |
-| 数据目录 | ✅ | `<DSH_HOME>/integrations/dsh-models-helper/`：`cache/`（models-dev.json 约 6 MB、openrouter-models.json 约 0.9 MB）+ 后续的快照 |
+| 数据目录 | ✅ | `<DSH_HOME>/integrations/dsh-models-helper/`：`cache/`（models-dev.json 约 6 MB、openrouter-models.json 约 0.9 MB）+ 后续的模型字段快照与价格快照（M1/M2） |
 
 **对后续实现的影响**
 
 - `describe().value` 是**生效值**，包含 schema 物化的默认值（如 `modelOverrides: {}`、`compat.chatTemplateKwargs: {}`、`defaultContextWindow`）。差异比较与快照必须基于 `describe().user`（profile 层）并对默认值做归一化，否则每个字段都会被误判为"手改"。
 - 经模型页保存 key 的内置路由，引用正是派生的 `<ROUTE>_API_KEY`，§10 中"在模型页删除原路由会连带删除凭据"的风险因此是常见情况而非边缘情况，克隆向导需要明确提示。
 - 开发循环：仓库以 `link:` 方式安装；重建后 Host 端需要一次 Plugin Manager 操作（停用再启用本插件包）触发重组，Client 端需要刷新页面（详见 [AGENTS.md](../AGENTS.md) §8）。
+- 价格与来源数据只在显式同步动作时联网（§5.1、§7、§9）：M2 的投影与花费显示不能从渲染路径触发来源请求；检查更新的失败回退必须把数据获取时间一并带回 Client 展示。
 - 尚未验证（留到对应里程碑）：`agentDefaultModel.saveSelection()`（M1）、session projection + `wire.view` 与对话区 slot（M2）、智能体工具与审批（M3）。
 
 ## 12. 里程碑
