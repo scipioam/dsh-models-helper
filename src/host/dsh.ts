@@ -83,6 +83,18 @@ export interface ProfileContext {
   readonly name: string
 }
 
+/** `@deepseek-ai/dsh-agent-default-model` service (README.zh.md "使用本包"). */
+export interface DefaultModelSelection {
+  provider: string
+  model: string
+  reasoningEffort?: string
+}
+
+export interface AgentDefaultModelService {
+  currentSelection(): DefaultModelSelection | undefined
+  saveSelection(selection: DefaultModelSelection): Promise<void>
+}
+
 /** The subset of a Cordis Context this plugin uses. */
 export interface HostContext {
   readonly logger: Logger
@@ -94,6 +106,7 @@ export interface HostContext {
   get(name: 'connection'): HostConnection | undefined
   get(name: 'llm'): LlmService | undefined
   get(name: 'profileContext'): ProfileContext | undefined
+  get(name: 'agentDefaultModel'): AgentDefaultModelService | undefined
   get(name: string): unknown
   effect(callback: () => (() => unknown) | void, label?: string): () => Promise<void>
   inject(deps: string[], callback: (ctx: HostContext) => void): unknown

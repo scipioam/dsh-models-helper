@@ -41,6 +41,8 @@ export interface SourceModel {
 export interface SourceSnapshot {
   models: SourceModel[]
   fetchedAt: number
+  /** True when this call revalidated the document online. */
+  online: boolean
   staleReason?: string
 }
 
@@ -188,7 +190,11 @@ export interface ModelsDevDocument {
   providerIds: string[]
   provider(id: string): { name?: string; env?: string[]; api?: string; models: SourceModel[] } | undefined
   fetchedAt: number
+  online: boolean
+  /** When the online read failed and a cached copy answered instead. */
   staleReason?: string
+  /** When the server was last asked successfully, including 304. */
+  checkedAt: number
 }
 
 /**
@@ -211,6 +217,8 @@ export async function readModelsDev(cacheDir: string, options: { force?: boolean
       }
     },
     fetchedAt: doc.fetchedAt,
+    online: doc.online,
+    checkedAt: Date.now(),
     ...doc.staleReason === undefined ? {} : { staleReason: doc.staleReason },
   }
 }
@@ -283,6 +291,7 @@ export async function readOpenRouter(cacheDir: string, options: { force?: boolea
   return {
     models: normalizeOpenRouter(parsed.data),
     fetchedAt: doc.fetchedAt,
+    online: doc.online,
     ...doc.staleReason === undefined ? {} : { staleReason: doc.staleReason },
   }
 }

@@ -7,7 +7,8 @@ import { setReact } from './runtime.ts'
 import { createApi } from './api.ts'
 import type { ClientContext } from './dsh.ts'
 import { en, NS, zh } from './locales.ts'
-import { ProbeCard, ProbeFooter } from './ProbeViews.tsx'
+import { Card } from './Card.tsx'
+import { Footer } from './Footer.tsx'
 import { PACKAGE_NAME } from '../shared/rpc.ts'
 
 declare global {
@@ -34,7 +35,7 @@ function apply(ctx: ClientContext): void {
     key: 'llm-pi-ai',
     locale: NS,
     inject: () => ({ api }),
-  }, ProbeCard))
+  }, Card))
 
   ctx.slots.inject('settings.models.footer', () => ctx.slots.register({
     name: 'settings.models.footer',
@@ -42,7 +43,7 @@ function apply(ctx: ClientContext): void {
     order: 50,
     locale: NS,
     inject: () => ({ api }),
-  }, ProbeFooter))
+  }, Footer))
 }
 
 window.__ModuleLoader__.load({
