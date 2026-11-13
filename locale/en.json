@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Models helper",
+    "description": "Clone a built-in provider into custom providers whose models, parameters and prices stay in sync with models.dev and OpenRouter, without retyping every model. Preview: currently runs the M0 feasibility checks on Settings → Models."
+  }
+}
