@@ -1,10 +1,12 @@
 # dsh-models-helper 设计文档
 
-> 状态：M0 技术验证已通过（见 §11），待开始 M1 · 目标 DSH 版本：0.2.2-rc.2（pi-ai 1.5.2）
+> 目标 DSH 版本：0.2.2-rc.2（pi-ai 1.5.2）· 阶段与进度见 [ROADMAP.md](../ROADMAP.md)，技术综述见 [AGENTS.md](../AGENTS.md)
 
 **基本约定**：npm 包名 `dsh-models-helper`；显示名「模型助手」/ *Models helper*；TypeScript + esbuild，源码与构建产物一同入库（安装时无需构建脚本）；单元测试用 vitest；提供中英文文案。
 
 ## 1. 背景与根因
+
+以下事实基于 DSH 0.2.2-rc.2 / pi-ai 1.5.2，数量为 2026-11-13 的实测值。
 
 | # | 事实 | 后果 |
 |---|---|---|
@@ -13,7 +15,7 @@
 | 3 | 目录外模型需要路由级唯一协议；混合协议目录（opencode-go：anthropic-messages 5 / openai-completions 21 / openai-responses 5 / gemini 1；openrouter：anthropic-messages 20 / openai-completions 383）对新模型直接报 `needs an api`，设路由级 `api` 又会改写所有模型。 | 内置路由上实际无法追加新模型。 |
 | 4 | 自定义路由一条只能一种协议、参数全手填；pi-ai 目录里的部分 compat 被列为 *withheld*（如 `supportsMidConvoSystemMessages`、`sessionAffinityFormat`、`openRouterRouting`），自定义路由上写会被拒绝。 | 改用自定义供应商 = 参数全丢 + 少量原生特性永久丢失。 |
 | 5 | pi-ai 目录有 `cost`，但 DSH 显式置零、无任何消费者。`TokenUsage` 提供互斥的 input / output / cacheRead / cacheWrite。 | 价格只能由插件自存自用；花费估算可行。 |
-| 6 | models.dev/api.json 是 pi-ai 目录的上游，实时可取（opencode-go 当前 40 个 vs 内置 32 个）；OpenRouter `/api/v1/models` 公开可取（当前 475 个）。 | 有可靠的新鲜数据源。 |
+| 6 | models.dev/api.json 是 pi-ai 目录的上游，实时可取（opencode-go 有 40 个，内置目录 32 个）；OpenRouter `/api/v1/models` 公开可取（共 475 个）。 | 有可靠的新鲜数据源。 |
 
 ## 2. 目标与非目标
 
@@ -167,11 +169,11 @@ UI 遵循宿主主题 token（`--dsw-alias-*`）与 locale，中英文文案；�
 
 ```
 Host（index.js）
-├─ SourceRegistry      拉取 + 缓存 models.dev / OpenRouter（缓存于插件存储，TTL 6h，可手动刷新）
+├─ SourceRegistry      拉取 + 缓存 models.dev / OpenRouter（原文缓存于数据目录 cache/，TTL 6h，可手动刷新）
 ├─ TemplateCatalog     运行时读取已安装 pi-ai 目录（compat、thinkingLevelMap、cost）
 ├─ MergeEngine         纯函数：SourceModel × 模板 × 绑定 × 快照 → 期望配置 + 差异
-├─ BindingStore        绑定与价格覆盖 → 插件自己的 Config（configEditor 写 cordis.patch.yml）
-├─ SnapshotStore       快照 → 插件存储（派生缓存）
+├─ BindingStore        绑定与价格覆盖 → 插件自己的 Config（volatile 字段，settings.mutate 写入 profile 补丁）
+├─ SnapshotStore       快照 → 数据目录下的 JSON（派生缓存）
 ├─ Writer              settings.mutate('llm-pi-ai', ops, revision)
 ├─ CostProjection      sessionProjections 单元 + wire.view
 └─ RPC 端点            供 Client 调用（clone / bind / diff / apply / prices / refresh）
@@ -193,31 +195,26 @@ Client（client.js，esbuild 由 JSX 打包）
 
 ## 11. M0 技术验证结论（2026-11-13，DSH 0.2.2-rc.2）
 
-全部探针在运行中的 Web 实例上通过；原始结果曾落盘在 `~/.dsh/integrations/dsh-models-helper/probe-results/`。
+全部探针在运行中的 Web 实例上通过；探针结果由 Host 落盘在 `<DSH_HOME>/integrations/dsh-models-helper/probe-results/`（`<DSH_HOME>` 即 `profileContext.home`，默认为用户目录下的 `.dsh`）。
 
 | 问题 | 结论 | 实现方式 |
 |---|---|---|
 | 能否读取 pi-ai 模板 | ✅ pi-ai 1.5.2，43 个供应商 | `configEditor.entries()` 找到 llm-pi-ai 行 → `pluginPackages.packageOf()` 定位其包目录 → 再从该目录定位 `@earendil-works/pi-ai` → 按 `exports["./providers/*"]` 动态 import `providers/all.js` |
 | Client ↔ Host 通信 | ✅ | Host：`ctx.connection.fetch.register()` 注册精确路由 `/api/dsh-models-helper/rpc`（仅 owner 可达）；Client：`ctx.connection.rpc.call('/api', 'dsh-models-helper/rpc', …)`，信封为 `client-request` / `server-response` |
-| 读 llm-pi-ai 配置 | ✅ | `ctx.settings.describe()` 的 `llm-pi-ai` 描述符；`apiKeyEnv`（credential-ref）可读：opencode-go=`OPENCODE_GO_API_KEY`，openrouter=`OPENROUTER_API_KEY` |
+| 读 llm-pi-ai 配置 | ✅ | `ctx.settings.describe()` 的 `llm-pi-ai` 描述符；`apiKeyEnv`（credential-ref，非 secret）可读。经模型页保存 key 的内置路由，引用名为派生的 `<ROUTE>_API_KEY`（如 `OPENCODE_GO_API_KEY`、`OPENROUTER_API_KEY`） |
 | 写 llm-pi-ai 配置 | ✅ 新路由即时注册为 `declared=true`，无需重启；过期 revision 被拒绝；删除干净 | `ctx.settings.mutate('llm-pi-ai', ops, revision)` |
 | 写插件自身配置 | ✅ | 同上，作用于本插件 namespace `models-helper`（字段需 `.volatile()`） |
 | 模型页挂载点 | ✅ 卡片内面板与页脚面板正常显示 | `settings.models.provider-card`（key `llm-pi-ai`）、`settings.models.footer` |
 | 来源可用性 | ✅ | models.dev：opencode-go 40 个（内置没有的 8 个），4 个协议组与模板一致（Anthropic 端点去掉 `/v1` 后与模板完全相同）；OpenRouter 官方：408 个支持工具调用的模型（内置没有的 13 个） |
-| 数据目录 | ✅ | `~/.dsh/integrations/dsh-models-helper/`：`cache/`（models-dev.json 6.1 MB、openrouter-models.json 0.9 MB）+ 后续的快照 |
+| 数据目录 | ✅ | `<DSH_HOME>/integrations/dsh-models-helper/`：`cache/`（models-dev.json 约 6 MB、openrouter-models.json 约 0.9 MB）+ 后续的快照 |
 
 **对后续实现的影响**
 
 - `describe().value` 是**生效值**，包含 schema 物化的默认值（如 `modelOverrides: {}`、`compat.chatTemplateKwargs: {}`、`defaultContextWindow`）。差异比较与快照必须基于 `describe().user`（profile 层）并对默认值做归一化，否则每个字段都会被误判为"手改"。
-- 内置路由的 key 引用正是模型页派生的 `<ROUTE>_API_KEY`，§10 中"在模型页删除原路由会连带删除凭据"的风险对这两家确实成立，克隆向导需要明确提示。
-- 开发循环：仓库以 `link:` 方式安装；重建后 Host 端需要一次 Plugin Manager 操作（停用再启用本插件包）触发重组，Client 端需要刷新页面。
+- 经模型页保存 key 的内置路由，引用正是派生的 `<ROUTE>_API_KEY`，§10 中"在模型页删除原路由会连带删除凭据"的风险因此是常见情况而非边缘情况，克隆向导需要明确提示。
+- 开发循环：仓库以 `link:` 方式安装；重建后 Host 端需要一次 Plugin Manager 操作（停用再启用本插件包）触发重组，Client 端需要刷新页面（详见 [AGENTS.md](../AGENTS.md) §8）。
 - 尚未验证（留到对应里程碑）：`agentDefaultModel.saveSelection()`（M1）、session projection + `wire.view` 与对话区 slot（M2）、智能体工具与审批（M3）。
 
 ## 12. 里程碑
 
-| 阶段 | 内容 |
-|---|---|
-| M0 | 技术验证：pi-ai 模板读取、Client↔Host RPC、`settings.mutate` 写 llm-pi-ai、provider-card slot 渲染 |
-| M1 | 来源 + 模板 + 合并引擎 + 克隆向导 + 绑定 + 差异/应用（模型页） |
-| M2 | 价格表 + 每轮/会话花费 + 子智能体聚合 |
-| M3 | Agent 工具：查看状态与差异（只读）、应用差异（与界面共用同一 Host 方法，写入前经审批）；打磨、文档与图标 |
+M0 技术验证 → M1 克隆、绑定与同步 → M2 价格与花费 → M3 智能体工具、打磨与发布。各阶段的任务、验收标准与进度统一维护在 [ROADMAP.md](../ROADMAP.md)，本文不再重复。
