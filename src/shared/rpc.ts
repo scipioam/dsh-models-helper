@@ -32,6 +32,15 @@ export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: RpcFailu
 /** Wire protocols a pi-ai custom route may declare. */
 export type Protocol = 'openai-completions' | 'openai-responses' | 'anthropic-messages' | 'google-generative-ai'
 
+/**
+ * Credential reference the Models page derives for a route that declares none:
+ * the route id uppercased, non-alphanumerics folded to `_`, plus `_API_KEY`.
+ * Clones use it so each cloned route owns an independent credential.
+ */
+export function deriveKeyRef(route: string): string {
+  return `${route.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
+}
+
 /** USD per 1M tokens; tiers price by input context size. */
 export interface Price {
   input: number
@@ -120,8 +129,23 @@ export interface CloneApplyArgs {
   groups: CloneGroupChoice[]
 }
 
+/** One cloned route's independent credential reference and how it was obtained. */
+export interface ClonedRouteKey {
+  route: string
+  ref: string
+  /**
+   * `copied` — the source route's key was copied into `ref`;
+   * `source-missing` — the source route had no resolvable key;
+   * `unavailable` — the credential service is unavailable;
+   * `copy-failed` — the copy write failed.
+   */
+  status: 'copied' | 'source-missing' | 'unavailable' | 'copy-failed'
+}
+
 export interface CloneApplyResult {
   routes: string[]
+  /** Independent credential reference chosen for each created route. */
+  keys?: ClonedRouteKey[]
   /** Set when the current default model pointed at the source route and a clone has it. */
   defaultSuggestion?: { provider: string; model: string; reasoningEffort?: string }
   warnings: string[]
@@ -166,8 +190,16 @@ export interface RouteInfo {
   binding?: BindingView
   /** A binding exists but the route is gone from llm-pi-ai. */
   orphanBinding?: boolean
-  /** Other cloned routes sharing this route's credential reference. */
+  /** Other routes sharing this route's credential reference. */
   sharedKeyWith?: string[]
+}
+
+/** Result of giving a route its own credential reference. */
+export interface SeparateKeyResult {
+  /** The reference now recorded on the route. */
+  ref: string
+  /** False when the route already owned its derived reference. */
+  copied: boolean
 }
 
 /** One cached metadata document, read from disk without any network call. */
@@ -326,6 +358,7 @@ export interface RpcMethods {
   'binding.apply': { args: ApplyArgs; result: ApplyResult }
   'binding.lock': { args: LockArgs; result: LockResult }
   'binding.unbind': { args: UnbindArgs; result: Record<string, never> }
+  'route.separateKey': { args: { route: string }; result: SeparateKeyResult }
   'defaultModel.use': { args: DefaultModelUseArgs; result: DefaultModelUseResult }
 }
 

@@ -95,6 +95,17 @@ export interface AgentDefaultModelService {
   saveSelection(selection: DefaultModelSelection): Promise<void>
 }
 
+/**
+ * `@deepseek-ai/dsh-credentials` seam (`ctx.credentials`). `resolve` returns the
+ * current value, which is what lets cloning copy the source route's key into a
+ * credential reference the clone owns.
+ */
+export interface CredentialsService {
+  resolve(ref: string): Promise<{ value: string } | undefined>
+  set(ref: string, value: string): Promise<unknown>
+  unset(ref: string): Promise<unknown>
+}
+
 /** The subset of a Cordis Context this plugin uses. */
 export interface HostContext {
   readonly logger: Logger
@@ -107,6 +118,7 @@ export interface HostContext {
   get(name: 'llm'): LlmService | undefined
   get(name: 'profileContext'): ProfileContext | undefined
   get(name: 'agentDefaultModel'): AgentDefaultModelService | undefined
+  get(name: 'credentials'): CredentialsService | undefined
   get(name: string): unknown
   effect(callback: () => (() => unknown) | void, label?: string): () => Promise<void>
   inject(deps: string[], callback: (ctx: HostContext) => void): unknown

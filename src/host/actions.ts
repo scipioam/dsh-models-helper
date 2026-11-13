@@ -8,7 +8,7 @@
  * result carries the data's real fetch time plus the failure reason.
  */
 import { join } from 'node:path'
-import type { HostContext, LlmConfigurableProvider, SettingsPathOp } from './dsh.ts'
+import type { CredentialsService, HostContext, LlmConfigurableProvider, SettingsPathOp } from './dsh.ts'
 import type {
   ApplyArgs,
   ApplyResult,
@@ -19,6 +19,7 @@ import type {
   CacheRefreshResult,
   CloneApplyArgs,
   CloneApplyResult,
+  ClonedRouteKey,
   CloneGroup,
   CloneGroupChoice,
   ClonePlan,
@@ -34,10 +35,11 @@ import type {
   Price,
   Protocol,
   RouteInfo,
+  SeparateKeyResult,
   SourceRef,
   UnbindArgs,
 } from '../shared/rpc.ts'
-import { MODEL_FIELDS } from '../shared/rpc.ts'
+import { MODEL_FIELDS, deriveKeyRef } from '../shared/rpc.ts'
 import { loadTemplateCatalog, type PiAiModel, type TemplateCatalog } from './pi-ai.ts'
 import { normalizeBaseURL, readModelsDev, readOpenRouter, type SourceModel } from './sources.ts'
 import { planGroup } from './merge.ts'
@@ -129,8 +131,20 @@ function userModels(ctx: HostContext, route: string): RawModel[] {
 function apiKeyEnvOf(ctx: HostContext, route: string): string | undefined {
   const fromRoute = effectiveProfile(ctx, route)?.apiKeyEnv
   if (typeof fromRoute === 'string' && fromRoute.length > 0) return fromRoute
-  const derived = route.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
-  return derived.length > 0 ? `${derived}_API_KEY` : undefined
+  return deriveKeyRef(route)
+}
+
+/** Resolve a credential reference to its current value, or undefined when absent/unreadable. */
+async function resolveCredential(credentials: CredentialsService, ref: string): Promise<string | undefined> {
+  try {
+    const hit = await credentials.resolve(ref)
+    return typeof hit?.value === 'string' && hit.value.length > 0 ? hit.value : undefined
+  } catch {
+    // A reference the seam cannot resolve (bad grammar, provider failure) is
+    // treated like a missing key: the clone is created keyless and the UI asks
+    // for one instead of failing the whole clone.
+    return undefined
+  }
 }
 
 function cacheDirOf(ctx: HostContext): string {
@@ -274,9 +288,11 @@ export async function helperStatus(ctx: HostContext): Promise<HelperStatus> {
     const binding = bindings[id]
     const keyEnv = routeKeyEnv.get(id)
     const declared = entry?.declared === true
-    const sharedKeyWith = declared
+    // Symmetric: a built-in route reports the clones sharing its key, and a
+    // clone reports the built-in route (and any sibling clone) sharing it.
+    const sharedKeyWith = keyEnv === undefined
       ? []
-      : [...ids].filter(other => other !== id && directory.get(other)?.declared === true && routeKeyEnv.get(other) !== undefined && routeKeyEnv.get(other) === keyEnv)
+      : [...ids].filter(other => other !== id && routeKeyEnv.get(other) === keyEnv)
     routes.push({
       id,
       displayName: profile?.displayName ?? entry?.displayName ?? id,
@@ -332,7 +348,6 @@ interface DraftGroup {
 interface CachedPlan {
   plan: ClonePlan
   source: LoadedSource
-  apiKeyEnv?: string
   originalDisplayName: string
   createdAt: number
 }
@@ -436,7 +451,6 @@ export async function clonePlan(ctx: HostContext, args: { provider?: unknown; so
   clonePlans.set(cloneCacheKey(provider, source), {
     plan,
     source: loaded,
-    apiKeyEnv: apiKeyEnvOf(ctx, provider),
     originalDisplayName: effective.providers?.[provider]?.displayName ?? provider,
     createdAt: Date.now(),
   })
@@ -468,6 +482,34 @@ export async function cloneApply(ctx: HostContext, args: CloneApplyArgs): Promis
     writes.push({ choice, group, models })
   }
 
+  // Each clone owns an independent credential reference. Copying the source
+  // route's key is what keeps the clone usable after the source provider is
+  // deleted or re-keyed (the Models page unsets a deleted route's reference).
+  // Copy before writing config: a keyless route is recoverable from the UI,
+  // while a route pointing at a missing reference is not distinguishable.
+  const credentials = ctx.get('credentials')
+  const sourceKey = credentials === undefined ? undefined : await resolveCredential(credentials, apiKeyEnvOf(ctx, args.provider) ?? '')
+  const keys: ClonedRouteKey[] = []
+  const copiedRefs: string[] = []
+  for (const { choice } of writes) {
+    const ref = deriveKeyRef(choice.routeId)
+    if (credentials === undefined) {
+      keys.push({ route: choice.routeId, ref, status: 'unavailable' })
+      continue
+    }
+    if (sourceKey === undefined) {
+      keys.push({ route: choice.routeId, ref, status: 'source-missing' })
+      continue
+    }
+    try {
+      await credentials.set(ref, sourceKey)
+      copiedRefs.push(ref)
+      keys.push({ route: choice.routeId, ref, status: 'copied' })
+    } catch {
+      keys.push({ route: choice.routeId, ref, status: 'copy-failed' })
+    }
+  }
+  const keyByRoute = new Map(keys.map(key => [key.route, key]))
   const ops: SettingsPathOp[] = writes.map(({ choice, group, models }) => {
     const route: Record<string, unknown> = {
       displayName: typeof choice.displayName === 'string' && choice.displayName.trim().length > 0 ? choice.displayName.trim() : group.suggestedName,
@@ -475,13 +517,19 @@ export async function cloneApply(ctx: HostContext, args: CloneApplyArgs): Promis
       baseURL: group.baseURL,
       models,
     }
-    if (cached.apiKeyEnv !== undefined) route.apiKeyEnv = cached.apiKeyEnv
+    const key = keyByRoute.get(choice.routeId)
+    if (key?.status === 'copied') route.apiKeyEnv = key.ref
     if (Object.keys(group.routeCompat).length > 0) route.compat = group.routeCompat
     return { op: 'set', path: ['providers', choice.routeId], value: route }
   })
   try {
     await settings.mutate(LLM_PI_AI_NS, ops, llm.revision)
   } catch (error) {
+    // The config write failed, so the copied keys belong to routes that do not
+    // exist; remove them instead of leaving orphaned secrets behind.
+    if (credentials !== undefined) {
+      for (const ref of copiedRefs) await credentials.unset(ref).catch(() => undefined)
+    }
     if (/changed since it was read/.test(errorText(error))) {
       throw new RpcError('models-helper/revision', '模型配置已被其他窗口修改，请重新打开克隆向导', { reason: errorText(error) })
     }
@@ -523,8 +571,7 @@ export async function cloneApply(ctx: HostContext, args: CloneApplyArgs): Promis
   await writePriceFile(ctx, prices)
 
   const warnings: string[] = []
-  if (cached.apiKeyEnv === undefined) warnings.push('key-unknown')
-  const result: CloneApplyResult = { routes: writes.map(entry => entry.choice.routeId), warnings }
+  const result: CloneApplyResult = { routes: writes.map(entry => entry.choice.routeId), keys, warnings }
   const selection = ctx.get('agentDefaultModel')?.currentSelection()
   if (selection !== undefined && selection.provider === args.provider) {
     const target = writes.find(entry => entry.group.models.some(model => model.id === selection.model))
@@ -888,6 +935,46 @@ export async function bindingUnbind(ctx: HostContext, args: UnbindArgs): Promise
   await writePriceFile(ctx, prices)
   recentDiffs.delete(route)
   return {}
+}
+
+/**
+ * Give one custom route its own credential reference. This repairs clones made
+ * before cloning generated an independent key: their `apiKeyEnv` still names
+ * the source provider's reference, so deleting or re-keying the source breaks
+ * them. The current value is copied to the derived reference and the route's
+ * `apiKeyEnv` is repointed in one settings write.
+ */
+export async function separateKey(ctx: HostContext, args: { route?: unknown }): Promise<SeparateKeyResult> {
+  const route = typeof args.route === 'string' ? args.route : ''
+  if (!routeIdOk(route)) throw new RpcError('models-helper/bad-request', 'route 参数无效')
+  if (!isDeclared(ctx, route)) throw new RpcError('models-helper/not-declared', '只有自定义供应商才能拆分密钥引用')
+  const settings = ctx.get('settings')
+  const llm = llmDescriptor(ctx)
+  const credentials = ctx.get('credentials')
+  if (settings === undefined || llm === undefined) throw new RpcError('models-helper/unavailable', 'settings 服务不可用')
+  if (credentials === undefined) throw new RpcError('models-helper/unavailable', 'credentials 服务不可用')
+  const currentRef = apiKeyEnvOf(ctx, route)
+  const targetRef = deriveKeyRef(route)
+  if (currentRef === targetRef) return { ref: targetRef, copied: false }
+  const value = currentRef === undefined ? undefined : await resolveCredential(credentials, currentRef)
+  if (value === undefined) {
+    throw new RpcError('models-helper/key-missing', `无法读取 ${currentRef ?? '当前'} 的密钥；请先在模型页为这个路由填写 API key`)
+  }
+  try {
+    await credentials.set(targetRef, value)
+  } catch (error) {
+    throw new RpcError('models-helper/key-copy-failed', `复制密钥失败：${errorText(error)}`)
+  }
+  try {
+    await settings.mutate(LLM_PI_AI_NS, [{ op: 'set', path: ['providers', route, 'apiKeyEnv'], value: targetRef }], llm.revision)
+  } catch (error) {
+    await credentials.unset(targetRef).catch(() => undefined)
+    if (/changed since it was read/.test(errorText(error))) {
+      throw new RpcError('models-helper/revision', '模型配置已被其他窗口修改，请重试', { reason: errorText(error) })
+    }
+    throw new RpcError('models-helper/write-failed', `写入 llm-pi-ai 失败：${errorText(error)}`)
+  }
+  return { ref: targetRef, copied: true }
 }
 
 export async function cacheRefresh(ctx: HostContext): Promise<CacheRefreshResult> {

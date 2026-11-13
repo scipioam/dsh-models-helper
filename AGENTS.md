@@ -6,7 +6,7 @@
 
 ## 1. 一句话
 
-一个 DSH **bundle**，包含 Host 插件和 Web Client 插件：从 models.dev / OpenRouter 拉取模型元数据，结合 DSH 自带的 pi-ai 模型目录（作为 compat 与推理档位的模板），生成或更新 `llm-pi-ai` 中的自定义供应商配置；并依据会话用量估算花费。当前处于 **M0 已完成、M1 未开始**，代码里的界面仍是 M0 的技术验证面板。
+一个 DSH **bundle**，包含 Host 插件和 Web Client 插件：从 models.dev / OpenRouter 拉取模型元数据，结合 DSH 自带的 pi-ai 模型目录（作为 compat 与推理档位的模板），生成或更新 `llm-pi-ai` 中的自定义供应商配置；并依据会话用量估算花费。当前处于 **M1 代码完成、待运行中冒烟验证**：克隆、绑定、检查更新、字段锁、默认模型切换都已实现，M0 探针已清理。
 
 ## 2. 必读顺序
 
@@ -46,23 +46,32 @@ lib/                    构建产物（入库）
 scripts/build.mjs       esbuild：先 Host 后 Client，顺序执行
 vitest.config.ts        单 fork、文件串行、无测试文件时通过
 pnpm-workspace.yaml     不运行 esbuild 的安装脚本
-src/shared/rpc.ts       前后端共用的 RPC 约定：endpoint 常量、方法表 RpcMethods 及其参数/结果类型
+src/shared/rpc.ts       前后端共用的 RPC 约定：endpoint 常量、M1 方法表及其参数/结果类型
 src/host/
   index.ts              Host 入口：导出 name / Config / apply；在 connection 可用时注册 RPC 方法
   rpc.ts                精确 Fetch 路由 /api/dsh-models-helper/rpc，说 Connection 的 client-request/server-response 信封
   dsh.ts                Host 侧 DSH 服务的结构类型
+  domain.ts             compat 门控表、绑定/锁/价格覆盖、模型字段归一化与快照类型
+  util.ts               deepEqual / cloneJson / errorText / iso
+  merge.ts              合并引擎（纯）：thinkingLevelMap 转换、offered/withheld compat、同系列推断、价格合并
+  diff.ts               差异引擎（纯）：快照/当前/来源三方比较、默认勾选、字段锁定
   pi-ai.ts              在运行时定位并加载已安装的 pi-ai 目录（模板）
-  sources.ts            models.dev / OpenRouter 的读取与归一化为 SourceModel
-  cache.ts              大文档的磁盘缓存（并发去重、下载失败时回退旧副本；只在显式动作时拉取）
-  probe.ts              M0 探针（M1 起逐步被正式功能替换）
+  sources.ts            models.dev / OpenRouter 的读取与归一化为 SourceModel（带 online 标记）
+  cache.ts              条件请求磁盘缓存（ETag/Last-Modified）；失败才回退旧副本并记录原因
+  store.ts              绑定（插件 Config）、模型字段快照与价格快照（数据目录 JSON）、缓存状态
+  actions.ts            用户操作的唯一实现：status / clone / bind / diff / apply / lock / unbind / cache / defaultModel
 src/client/
   index.tsx             Client 入口：window.__ModuleLoader__.load({ id, factory })，注册 locale 与 slot
+  Card.tsx              供应商卡片面板：按内置 / 已绑定 / 未绑定渲染克隆、绑定、检查更新
+  Wizards.tsx           克隆向导与绑定面板（内联展开，不用宿主弹层）
+  DiffPanel.tsx         差异面板：分组、字段级勾选、锁定、价格变化只读
+  Footer.tsx            页脚：绑定汇总、全部检查更新、来源缓存状态与刷新
+  ui.tsx                useStatus、时间/字段格式化、徽标与横幅
   runtime.ts            React live binding
   api.ts                Host RPC 的类型化调用封装（传输错误折叠为 { ok: false }）
   dsh.ts                Client 侧 DSH 服务与 slot owner props 的结构类型
   locales.ts            zh / en 词典
   styles.ts             组件内样式（只用主题 token）
-  ProbeViews.tsx        M0 验证面板（provider-card 与 footer）
 test/                   vitest 单元测试（纯逻辑，不依赖 DSH 运行时）
 docs/DESIGN.md          设计文档
 ```
@@ -74,11 +83,13 @@ docs/DESIGN.md          设计文档
 | 服务（`ctx.get(...)`） | 用途 | 代码位置 |
 |---|---|---|
 | `connection` | `connection.fetch.register({ path: '/api/dsh-models-helper/rpc', methods: ['POST'], requestBody: 'buffered', fetch })` 注册精确路由；**只有 owner Peer 能到达** | `src/host/rpc.ts` |
-| `settings` | `describe()` 读各 namespace 的 `value`（生效值）/ `user`（profile 层）/ `revision`；`mutate(ns, ops, revision)` 按路径写入 | `src/host/probe.ts` |
+| `settings` | `describe()` 读各 namespace 的 `value`（生效值）/ `user`（profile 层）/ `revision`；`mutate(ns, ops, revision)` 按路径写入 | `src/host/store.ts`、`src/host/actions.ts` |
 | `configEditor` | `entries()` 找 llm-pi-ai 的 Loader 行（用于定位其包目录） | `src/host/pi-ai.ts` |
 | `pluginPackages` | `packageOf(specifier, parentURL)` 按 profile 的解析规则定位包目录 | `src/host/pi-ai.ts` |
-| `llm` | `listConfigurableProviders()`：每条路由的 `declared`（`false` 为内置目录路由，`true` 为手工声明）等 | `src/host/probe.ts` |
-| `profileContext` | `home`（DSH home）→ 数据目录 `<home>/integrations/dsh-models-helper/` | `src/host/probe.ts` |
+| `llm` | `listConfigurableProviders()`：每条路由的 `declared`（`false` 为内置目录路由，`true` 为手工声明）等 | `src/host/actions.ts` |
+| `profileContext` | `home`（DSH home）→ 数据目录 `<home>/integrations/dsh-models-helper/` | `src/host/store.ts` |
+| `agentDefaultModel` | `currentSelection()` / `saveSelection()`：克隆后切换默认模型 | `src/host/actions.ts` |
+| `credentials` | `resolve()` / `set()` / `unset()`：克隆时把原 key 复制到路由自己的 `<ROUTE>_API_KEY` 引用；`route.separateKey` 修复早期共享引用 | `src/host/actions.ts` |
 
 相关 settings namespace：`llm-pi-ai`（所有 pi-ai 供应商，路径 `providers.<routeId>`）与 `models-helper`（本插件，即 Loader 行 id）。
 
@@ -90,10 +101,24 @@ docs/DESIGN.md          设计文档
 | `locale.register(ns, locale, dict)` / slot 选项 `locale: NS` | 组件通过 `props.t(key, params)` 取文案，`{name}` 占位插值 |
 | `slots.inject(name, () => slots.register(options, Component))` | slot 消失时自动撤销、恢复时自动重装 |
 | `settings.models.provider-card`（keyed，key=`llm-pi-ai`） | 每张 pi-ai 供应商卡片内的扩展区；owner props：`provider`（含 `provider` 路由 id、`declared`、`displayName`…）、`configured`、`keyConfigured` |
-| `settings.models.footer`（list） | 模型页底部扩展区 |
+| `settings.models.footer`（list） | 模型页底部扩展区：绑定汇总、全部检查更新、来源缓存 |
 | 计划使用：`conversation.chat.turnTail`、`conversation.session.header.utilities` | M2 的每轮花费与会话累计 |
 
 `package.json` 的 `dsh.client.inject` 列出需要先激活的 Client 包（connection、locale、settings-models），只用于排序激活，不会被 import。
+
+### RPC 方法（M1）
+
+| 方法 | 作用 | 网络/写入 |
+|---|---|---|
+| `helper.status` | 路由、绑定、模板、默认模型、缓存状态的快照 | 不联网、只读 |
+| `cache.refresh` | 强制重新校验两个来源文档，返回缓存状态 | 联网，不写配置 |
+| `clone.plan` / `clone.apply` | 生成克隆计划 / 写路由+绑定+快照+价格 | plan 联网；apply 写 `llm-pi-ai` 与插件配置 |
+| `bind.options` / `binding.bind` | 候选来源与模板 / 绑定并给出首次差异 | 联网；bind 写绑定与价格快照 |
+| `binding.diff` | 检查更新（单路由或全部） | **每次都联网**（失败回退缓存），刷新价格快照 |
+| `binding.apply` | 按选择写 `models` 数组并重建快照 | 写 `llm-pi-ai`，revision 乐观锁 |
+| `binding.lock` / `binding.unbind` | 字段锁 / 解除绑定（并清理快照与价格） | 写插件配置/数据目录 |
+| `route.separateKey` | 把路由的共享凭据复制到自己的 `<ROUTE>_API_KEY` 并改引用 | 写凭据与 `llm-pi-ai` |
+| `defaultModel.use` | 切换默认模型（`agentDefaultModel.saveSelection`） | 写 profile |
 
 ### pi-ai 模板加载
 
@@ -107,7 +132,7 @@ docs/DESIGN.md          设计文档
 4. **compat 字段只能写到声明它的协议上**：模型级写错协议会报错，路由级会被跳过，但如果路由上没有任何模型能读到该字段，同样报错。
 5. **Gemini（`google-generative-ai`）路由**的推理档位只允许 `minimal/low/medium/high`，且值必须等于档位名。
 6. **`reasoningEfforts`** 中只有 `off` 可以留空（null）；至少要有一个 `off` 以外的档位；`false` 表示不推理。
-7. **内置路由的 key 引用**通常是模型页派生的 `<ROUTE>_API_KEY`。在模型页删除该路由会连凭据一起删除，克隆出的路由会因此失效。
+7. **内置路由的 key 引用**通常是模型页派生的 `<ROUTE>_API_KEY`。在模型页删除该路由会连凭据一起删除。克隆路由使用自己派生的 `<ROUTE>_API_KEY`：克隆时用 `ctx.credentials.resolve` 读取原 key 并 `set` 到新引用，因此删除/改键原路由不影响克隆；早期共享引用的克隆可通过 `route.separateKey` 修复。
 8. **models.dev 的 api.json 约 6 MB**：只缓存原文到磁盘，每次解析后只保留需要的供应商，不要把整个对象常驻内存。
 9. **精确 Fetch 路由路径必须以 `/api/` 开头**；endpoint 的每一段只能包含 `[A-Za-z0-9_$.-]`。
 10. **Host 代码更新不会自动生效**：`link:` 安装下文件变化要等下一次 profile 重组。需要在插件管理里把本插件包停用再启用（或执行任一会触发重组的插件管理操作）；Client 端刷新页面即可。
@@ -133,14 +158,14 @@ pnpm run check        # 以上三步顺序执行；提交前运行
 3. **之后**：停用再启用插件包，让 Host 加载新代码；刷新页面，让 Client 加载新代码。
 4. 验证手段（按优先级）：
    - 有浏览器控制时直接看页面；没有时用 Cordis inspect（`Slots.listSubTree` 看 slot 是否被占用，`Config.listConfigs` 看 Loader 行），并请用户操作。
-   - M0 期间，Host 会把每个探针结果写到 `<DSH_HOME>/integrations/dsh-models-helper/probe-results/<name>.json`，用户点完按钮即可读取（M1 清理）。
+   - 没有浏览器控制时，Host 的状态落在数据目录：`snapshots.json`（模型字段快照）、`prices.json`（价格快照）、`cache/*.meta.json`（来源获取时间与失败原因）；写入结果可直接读 `<DSH_HOME>/profiles/<profile>/cordis.patch.yml` 核对。
    - 纯逻辑（归一化、合并、差异）一律写 vitest 单测，不依赖 DSH 运行时。
 5. 测试中改动过的用户状态（如临时供应商）必须恢复。写入测试本身就遵循"增加后立即删除"。
 6. 涉及来源同步的改动要验证两条路径：在线成功（拿到新数据）与失败回退（缓存数据 + 数据获取时间标注）；价格与估算相关改动还要确认渲染路径没有发起来源请求。
 
 ## 9. 编码约定
 
-- RPC：方法名形如 `<领域>.<动作>`，例如 `probe.status`、未来的 `binding.diff`。在 `src/shared/rpc.ts` 的 `RpcMethods` 中声明参数和结果类型，在 `src/host/index.ts` 中实现；业务错误抛 `RpcError(code, message)`，code 统一以 `models-helper/` 为前缀。
+- RPC：方法名形如 `<领域>.<动作>`，例如 `helper.status`、`binding.diff`。在 `src/shared/rpc.ts` 的 `RpcMethods` 中声明参数和结果类型，在 `src/host/actions.ts` 中实现、`src/host/index.ts` 中注册；业务错误抛 `RpcError(code, message)`，code 统一以 `models-helper/` 为前缀。
 - 一个操作只实现一次，放在 Host；界面和（M3 的）智能体工具调用同一个 Host 方法。
 - 合并引擎、差异计算写成纯函数，输入为 SourceModel、模板模型、绑定和快照，输出期望配置和差异；I/O 留在边缘。
 - 注释说明"为什么"；对 DSH 行为的假设写明出处（README 或源码文件）。

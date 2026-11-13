@@ -20,6 +20,7 @@ import {
   cloneApply,
   clonePlan,
   helperStatus,
+  separateKey,
   useDefaultModel,
 } from './actions.ts'
 
@@ -53,6 +54,7 @@ export function apply(ctx: HostContext): void {
       'binding.apply': args => bindingApply(ctx, args),
       'binding.lock': args => bindingLock(ctx, args),
       'binding.unbind': args => bindingUnbind(ctx, args),
+      'route.separateKey': args => separateKey(ctx, args),
       'defaultModel.use': args => useDefaultModel(ctx, args),
     }, ctx.logger)
     scoped.effect(() => dispose, 'models-helper: rpc route')

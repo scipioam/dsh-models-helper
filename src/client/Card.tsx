@@ -8,6 +8,7 @@ import { React } from './runtime.ts'
 import type { HelperApi } from './api.ts'
 import type { ProviderCardOwnerProps, Translate } from './dsh.ts'
 import type { BindOptions, BindingDiff, CloneApplyResult, ClonePlan, SourceRef } from '../shared/rpc.ts'
+import { deriveKeyRef } from '../shared/rpc.ts'
 import { Banner, fmtTime, sourceLabel, Styles, useStatus } from './ui.tsx'
 import { DiffPanel } from './DiffPanel.tsx'
 import { BindPanel, CloneWizard } from './Wizards.tsx'
@@ -27,6 +28,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
   const [actionError, setActionError] = React.useState<string | undefined>(undefined)
   const [cloneResult, setCloneResult] = React.useState<CloneApplyResult | undefined>(undefined)
   const [applied, setApplied] = React.useState<string | undefined>(undefined)
+  const [keyMessage, setKeyMessage] = React.useState<string | undefined>(undefined)
   const [confirmUnbind, setConfirmUnbind] = React.useState(false)
 
   const route = status?.routes.find(row => row.id === provider.provider)
@@ -79,6 +81,22 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
     await reload()
   }
 
+  // Repairs clones made before clone created its own credential reference:
+  // copy the shared key into this route's derived reference and repoint it.
+  const splitKey = async (): Promise<void> => {
+    setBusy('split')
+    setActionError(undefined)
+    setKeyMessage(undefined)
+    const result = await api.call('route.separateKey', { route: provider.provider })
+    setBusy(undefined)
+    if (result.ok) {
+      setKeyMessage(t('card.splitKeyDone', { ref: result.value.ref }))
+      await reload()
+    } else {
+      setActionError(result.error.message)
+    }
+  }
+
   const refreshLists = async (): Promise<void> => { await reload() }
 
   return (
@@ -122,6 +140,17 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
       {!declared && route !== undefined && route.sharedKeyWith !== undefined && route.sharedKeyWith.length > 0 ? (
         <Banner kind="warn">{t('card.deleteKeyWarn', { key: route.apiKeyEnv ?? '?' })}</Banner>
       ) : null}
+      {declared && route?.apiKeyEnv !== undefined && route.apiKeyEnv !== deriveKeyRef(provider.provider) && (route.sharedKeyWith?.length ?? 0) > 0 ? (
+        <>
+          <Banner kind="warn">{t('card.sharedKeyWarn', { key: route.apiKeyEnv, others: (route.sharedKeyWith ?? []).join(', ') })}</Banner>
+          <div className="dmh-actions">
+            <button type="button" className="dmh-button" disabled={busy !== undefined} onClick={() => { void splitKey() }}>
+              {busy === 'split' ? t('card.splittingKey') : t('card.splitKey')}
+            </button>
+          </div>
+        </>
+      ) : null}
+      {keyMessage === undefined ? null : <Banner kind="ok">{keyMessage}</Banner>}
       {status?.defaultSelection?.provider === provider.provider ? <div className="dmh-hint">{t('card.defaultNote')}</div> : null}
 
       {binding === undefined ? null : (
@@ -165,6 +194,11 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
       {cloneResult === undefined ? null : (
         <div className="dmh-group">
           <Banner kind="ok">{t('clone.done', { routes: cloneResult.routes.join(', ') })}</Banner>
+          {cloneResult.keys === undefined ? null : cloneResult.keys.map(key => (
+            key.status === 'copied'
+              ? <div key={key.route} className="dmh-muted">{t('clone.keyCopied', { routes: key.route })}</div>
+              : <Banner key={key.route} kind="warn">{t('clone.keyPending', { routes: key.route, ref: key.ref })}</Banner>
+          ))}
           {cloneResult.defaultSuggestion === undefined ? null : <DefaultSuggestion api={api} t={t} suggestion={cloneResult.defaultSuggestion} />}
         </div>
       )}
