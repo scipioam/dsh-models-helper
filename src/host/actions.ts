@@ -45,6 +45,7 @@ import { loadTemplateCatalog, type PiAiModel, type TemplateCatalog } from './pi-
 import { normalizeBaseURL, readModelsDev, readOpenRouter, type SourceModel } from './sources.ts'
 import { planGroup } from './merge.ts'
 import { computeDiff, type ComputedDiff } from './diff.ts'
+import { applySelection } from './apply.ts'
 import type { Binding, ModelFields, PriceFile, RawLlmConfig, RawModel, RawProfile, SnapshotFile } from './domain.ts'
 import { definedFields, LLM_PI_AI_NS, lockKey, modelFieldsOf } from './domain.ts'
 import {
@@ -62,7 +63,7 @@ import {
   writeSnapshotFile,
 } from './store.ts'
 import { RpcError } from './rpc.ts'
-import { cloneJson, deepEqual, errorText, iso } from './util.ts'
+import { deepEqual, errorText, iso } from './util.ts'
 
 const PROTOCOLS: readonly Protocol[] = ['anthropic-messages', 'openai-completions', 'openai-responses', 'google-generative-ai']
 const PROTOCOL_SUFFIX: Record<Protocol, string> = {
@@ -851,44 +852,7 @@ export async function bindingApply(ctx: HostContext, args: ApplyArgs): Promise<A
   if (!Array.isArray(args.selection) || args.selection.length === 0) throw new RpcError('models-helper/bad-request', '没有选中要应用的项')
   const settings = ctx.get('settings')
   if (settings === undefined) throw new RpcError('models-helper/unavailable', 'settings 服务不可用')
-  const desiredById = new Map(context.desired.map(model => [model.id, model]))
-  const removed = new Set<string>()
-  const additions: RawModel[] = []
-  const updates: { id: string; fields: ModelFieldName[] }[] = []
-  for (const item of args.selection) {
-    if (typeof item.id !== 'string') continue
-    if (item.mode === 'remove') { removed.add(item.id); continue }
-    if (item.mode === 'add') {
-      const desired = desiredById.get(item.id)
-      if (desired === undefined) continue
-      additions.push({ id: desired.id, ...definedFields(desired.fields) } as RawModel)
-      continue
-    }
-    const fields = Array.isArray(item.fields)
-      ? item.fields.filter((field): field is ModelFieldName => APPLY_FIELDS.has(field as ModelFieldName))
-      : []
-    if (fields.length > 0) updates.push({ id: item.id, fields })
-  }
-
-  const models: RawModel[] = context.currentRaw
-    .filter(model => !removed.has(model.id))
-    .map(model => cloneJson(model))
-  const byId = new Map(models.map(model => [model.id, model]))
-  for (const addition of additions) {
-    if (byId.has(addition.id)) continue
-    models.push(addition)
-    byId.set(addition.id, addition)
-  }
-  for (const update of updates) {
-    const entry = byId.get(update.id)
-    const desired = desiredById.get(update.id)
-    if (entry === undefined || desired === undefined) continue
-    for (const field of update.fields) {
-      const value = desired.fields[field]
-      if (value === undefined) delete entry[field]
-      else (entry as Record<string, unknown>)[field] = value
-    }
-  }
+  const models = applySelection(context.currentRaw, context.desired, args.selection)
   if (models.length === 0) throw new RpcError('models-helper/empty-route', '应用后路由将没有任何模型，已取消')
 
   try {

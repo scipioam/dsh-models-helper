@@ -169,7 +169,9 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
             {binding.lastSync === undefined ? t('time.never') : t('time.lastSync', { time: fmtTime(binding.lastSync, t) })}
             {binding.locked.length > 0 ? ` · ${t('card.lockedCount', { count: binding.locked.length })}` : ''}
           </div>
-          <label className="dmh-check">
+          {/* The explanation is a hover tooltip so a long paragraph does not
+              push the card's other controls down. */}
+          <label className="dmh-check" title={t('card.autoIncludeHint')}>
             <input
               type="checkbox"
               checked={binding.autoIncludeNew}
@@ -178,7 +180,6 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
             />
             <span className="dmh-hint">{t('card.autoInclude')}</span>
           </label>
-          <div className="dmh-hint">{t('card.autoIncludeHint')}</div>
         </div>
       )}
 
