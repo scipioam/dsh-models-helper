@@ -6,7 +6,7 @@
 
 ## 1. 一句话
 
-一个 DSH **bundle**，包含 Host 插件和 Web Client 插件：从 models.dev / OpenRouter 拉取模型元数据，结合 DSH 自带的 pi-ai 模型目录（作为 compat 与推理档位的模板），生成或更新 `llm-pi-ai` 中的自定义供应商配置；并依据会话用量估算花费。当前处于 **M1 代码完成、待运行中冒烟验证**：克隆、绑定、检查更新、字段锁、默认模型切换都已实现，M0 探针已清理。
+一个 DSH **bundle**，包含 Host 插件和 Web Client 插件：从 models.dev / OpenRouter 拉取模型元数据，结合 DSH 自带的 pi-ai 模型目录（作为 compat 与推理档位的模板），生成或更新 `llm-pi-ai` 中的自定义供应商配置；并依据会话用量估算花费。当前处于 **M1 已完成（2026-11-17）**：克隆、绑定更新来源、检查更新、字段锁、默认模型切换都已实现并通过运行中冒烟验证，M0 探针与 `probe-results/` 已清理。
 
 ## 2. 必读顺序
 
@@ -72,7 +72,8 @@ src/client/
   dsh.ts                Client 侧 DSH 服务与 slot owner props 的结构类型
   locales.ts            zh / en 词典
   styles.ts             组件内样式（只用主题 token）
-test/                   vitest 单元测试（纯逻辑，不依赖 DSH 运行时）
+test/                   vitest 单元测试：merge/diff/sources/normalize/cache/apply/actions，
+                        host-fixture.ts 提供内存版 HostContext
 docs/DESIGN.md          设计文档
 ```
 
@@ -117,6 +118,7 @@ docs/DESIGN.md          设计文档
 | `binding.diff` | 检查更新（单路由或全部） | **每次都联网**（失败回退缓存），刷新价格快照 |
 | `binding.apply` | 按选择写 `models` 数组并重建快照 | 写 `llm-pi-ai`，revision 乐观锁 |
 | `binding.lock` / `binding.unbind` | 字段锁 / 解除绑定（并清理快照与价格） | 写插件配置/数据目录 |
+| `binding.setAutoInclude` | 切换「自动纳入新模型」：检查更新时新模型默认勾选/仅候选 | 写插件配置 |
 | `route.separateKey` | 把路由的共享凭据复制到自己的 `<ROUTE>_API_KEY` 并改引用 | 写凭据与 `llm-pi-ai` |
 | `defaultModel.use` | 切换默认模型（`agentDefaultModel.saveSelection`） | 写 profile |
 
