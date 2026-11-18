@@ -45,7 +45,8 @@ import { loadTemplateCatalog, type PiAiModel, type TemplateCatalog } from './pi-
 import { normalizeBaseURL, readModelsDev, readOpenRouter, type SourceModel } from './sources.ts'
 import { planGroup } from './merge.ts'
 import { computeDiff, type ComputedDiff } from './diff.ts'
-import { applySelection } from './apply.ts'
+import { applySelection, selectionProblemMessage } from './apply.ts'
+import { selectionProblem } from '../shared/selection.ts'
 import type { Binding, ModelFields, PriceFile, RawModel, SnapshotFile } from './domain.ts'
 import { definedFields, LLM_PI_AI_NS, lockKey, modelFieldsOf } from './domain.ts'
 import {
@@ -651,6 +652,22 @@ interface DiffContext {
 
 const recentDiffs = new Map<string, DiffContext>()
 
+/**
+ * The in-memory diff a tool may apply. Applying always requires one of these
+ * from the same Host process: a check after a plugin reload starts over, which
+ * is what keeps a stale selection from writing.
+ */
+export interface RecentDiff {
+  diff: ComputedDiff
+  revision: number
+}
+
+/** Read the last successful check for a route without touching its state. */
+export function readRecentDiff(route: string): RecentDiff | undefined {
+  const context = recentDiffs.get(route)
+  return context === undefined ? undefined : { diff: context.diff, revision: context.revision }
+}
+
 interface CheckedBinding {
   plan: { models: PlannedModel[] }
   diff: BindingDiff
@@ -687,7 +704,7 @@ async function checkBinding(
   if (profile === undefined) {
     return {
       plan: { models: [] },
-      diff: { ...base, error: '路由已不存在（可能已被删除）' },
+      diff: { ...base, error: '路由已不存在（可能已被删除）', errorCode: 'models-helper/route-missing' },
       context: { binding, desired: [], currentRaw: [], revision, diff: { added: [], candidates: [], updates: [], conflicts: [], removed: [] } },
       prices: options.prices ?? { routes: {} },
     }
@@ -698,7 +715,7 @@ async function checkBinding(
   } catch (error) {
     return {
       plan: { models: [] },
-      diff: { ...base, error: errorText(error) },
+      diff: { ...base, error: errorText(error), errorCode: 'models-helper/source-failed' },
       context: { binding, desired: [], currentRaw: [], revision, diff: { added: [], candidates: [], updates: [], conflicts: [], removed: [] } },
       prices: options.prices ?? { routes: {} },
     }
@@ -707,7 +724,7 @@ async function checkBinding(
   if (sourceModels.length === 0) {
     return {
       plan: { models: [] },
-      diff: { ...base, fetchedAt: iso(loaded.fetchedAt), online: loaded.online, ...loaded.staleReason === undefined ? {} : { staleReason: loaded.staleReason }, error: '来源中没有与该协议组匹配的模型' },
+      diff: { ...base, fetchedAt: iso(loaded.fetchedAt), online: loaded.online, ...loaded.staleReason === undefined ? {} : { staleReason: loaded.staleReason }, error: '来源中没有与该协议组匹配的模型', errorCode: 'models-helper/no-source' },
       context: { binding, desired: [], currentRaw: [], revision, diff: { added: [], candidates: [], updates: [], conflicts: [], removed: [] } },
       prices: options.prices ?? { routes: {} },
     }
@@ -817,6 +834,11 @@ export async function bindingApply(ctx: HostContext, args: ApplyArgs): Promise<A
   if (context === undefined) throw new RpcError('models-helper/refresh-required', '差异已失效，请重新检查更新')
   if (args.revision !== context.revision) throw new RpcError('models-helper/revision', '配置已被其他窗口修改，请重新检查更新')
   if (!Array.isArray(args.selection) || args.selection.length === 0) throw new RpcError('models-helper/bad-request', '没有选中要应用的项')
+  // A selection the visible diff never offered must not reach the writer.
+  const problem = selectionProblem(context.diff, args.selection)
+  if (problem !== undefined) {
+    throw new RpcError('models-helper/selection-invalid', selectionProblemMessage(problem), { problem })
+  }
   const settings = ctx.get('settings')
   if (settings === undefined) throw new RpcError('models-helper/unavailable', 'settings 服务不可用')
   const models = applySelection(context.currentRaw, context.desired, args.selection)

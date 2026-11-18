@@ -52,6 +52,7 @@ export function TurnCost(props: TurnTailOwnerProps & { api: HelperApi }): ReactE
       <Styles />
       <span className="dmh-cost-label">{t('cost.turn')}</span>
       <span className="dmh-cost-value"><Amount summary={summary} /></span>
+      {summary.missing > 0 ? <span className="dmh-cost-na">{t('cost.partial')}</span> : null}
     </div>
   )
 }
@@ -79,6 +80,13 @@ export function SessionCost(props: ConversationSlotProps & { api: HelperApi }): 
   const summary = summarize(routes, prices.table)
   if (summary.lines.length === 0) return null
 
+  React.useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent): void => { if (event.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('keydown', onKey) }
+  }, [open])
+
   const toggle = (): void => {
     const rect = anchor.current?.getBoundingClientRect()
     if (rect !== undefined && typeof window !== 'undefined') {
@@ -104,7 +112,7 @@ export function SessionCost(props: ConversationSlotProps & { api: HelperApi }): 
       {open && position !== undefined ? (
         <>
           <div className="dmh-cost-backdrop" onClick={() => setOpen(false)} />
-          <div className="dmh-cost-pop" style={{ right: position.right, top: position.top }}>
+          <div className="dmh-cost-pop" role="dialog" aria-modal="false" aria-label={t('cost.breakdown')} style={{ right: position.right, top: position.top }}>
             <div className="dmh-cost-pop-title">{t('cost.breakdown')}</div>
             <ul className="dmh-cost-lines">
               {summary.lines.map(line => (
@@ -127,6 +135,7 @@ export function SessionCost(props: ConversationSlotProps & { api: HelperApi }): 
                   : t('cost.subagentsPartial', { count: children.length, missing: children.length - childValues })}
               </div>
             )}
+            {summary.missing > 0 ? <div className="dmh-cost-note">{t('cost.partial')}</div> : null}
             <div className="dmh-cost-note">{t('cost.localHint')}</div>
           </div>
         </>

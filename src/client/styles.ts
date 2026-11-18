@@ -46,7 +46,7 @@ export const CSS = `
   color: var(--dsw-alias-label-primary);
   font: inherit; font-size: 12px;
 }
-.dmh-input:focus-visible, .dmh-select:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.dmh-input:focus-visible, .dmh-select:focus-visible, .dmh-link:focus-visible, .dmh-lock:focus-visible, .dmh-cost-button:focus-visible, .dmh-check input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
 .dmh-list { margin: 6px 0 0; padding: 0; list-style: none; }
 .dmh-list li { display: flex; gap: 8px; padding: 2px 0; align-items: baseline; }
 .dmh-scroll { max-height: 260px; overflow-y: auto; }
@@ -101,7 +101,7 @@ export const CSS = `
 .dmh-prices { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--dsw-alias-border-l1); }
 .dmh-link { appearance: none; background: none; border: none; padding: 0; cursor: pointer; color: var(--dsw-alias-brand-primary); font: inherit; font-size: 12px; }
 .dmh-link:hover { text-decoration: underline; }
-.dmh-price-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.dmh-price-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; max-height: 360px; overflow-y: auto; }
 .dmh-price-row { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed var(--dsw-alias-border-l1); }
 .dmh-price-main { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; min-width: 0; }
 .dmh-price-model { flex: none; }

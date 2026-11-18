@@ -387,6 +387,8 @@ export interface BindingDiff {
   locked: string[]
   /** Set when this route cannot be checked (e.g. the route disappeared). */
   error?: string
+  /** Stable code for `error`; the Client localizes this instead of the message. */
+  errorCode?: string
   /** Non-fatal condition, e.g. the installed template is unavailable. */
   warning?: string
 }

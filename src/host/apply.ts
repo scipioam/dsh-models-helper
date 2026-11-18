@@ -4,6 +4,7 @@
  * add/update/remove rows is unit-testable without settings or network I/O.
  */
 import type { ApplySelection, ModelFieldName, PlannedModel } from '../shared/rpc.ts'
+import type { SelectionProblem } from '../shared/selection.ts'
 import type { RawModel } from './domain.ts'
 import { definedFields } from './domain.ts'
 import { cloneJson } from './util.ts'
@@ -17,6 +18,26 @@ export const APPLY_FIELDS: ReadonlySet<ModelFieldName> = new Set([
   'reasoningEfforts',
   'compat',
 ])
+
+/**
+ * Human-readable reason for a rejected selection. The wire code is
+ * `models-helper/selection-invalid`; the Client localizes the code and this
+ * message is mainly for logs and the Host-side tool error.
+ */
+export function selectionProblemMessage(problem: SelectionProblem): string {
+  switch (problem.reason) {
+    case 'invalid':
+      return '应用选择无效'
+    case 'unknown-model':
+      return `差异中没有模型 "${problem.id}"`
+    case 'wrong-mode':
+      return `模型 "${problem.id}" 的操作类型与差异不一致`
+    case 'field-not-in-diff':
+      return `差异中没有模型 "${problem.id}" 的字段 "${problem.field}"`
+    case 'empty-fields':
+      return `模型 "${problem.id}" 没有选择要更新的字段`
+  }
+}
 
 /**
  * Apply one diff selection to the current models.

@@ -4,52 +4,9 @@ import { React } from './runtime.ts'
 import type { HelperApi } from './api.ts'
 import type { Translate } from './dsh.ts'
 import type { ApplySelection, BindingDiff, FieldDiff, ModelDiff, ModelFieldName } from '../shared/rpc.ts'
+import { defaultSelection, entryForRow, type SelectionEntry } from './diff-selection.ts'
+import { diffErrorText, errorText } from './errors.ts'
 import { Banner, fieldLabel, fieldText, fmtTime, ProvenanceBadge, Styles } from './ui.tsx'
-
-interface SelectionEntry {
-  mode: 'add' | 'update' | 'remove'
-  fields: Set<ModelFieldName>
-}
-
-function entryFor(mode: SelectionEntry['mode'], fields: readonly ModelFieldName[]): SelectionEntry {
-  return { mode, fields: new Set(fields) }
-}
-
-/**
- * Fields a conflict row may fill by default: the source has a value and the
- * model does not set that field at all. Values the model already sets stay
- * unchecked so a hand edit is never overwritten silently.
- */
-export function gapFields(row: ModelDiff): ModelFieldName[] {
-  return row.fields.filter(field => field.old === undefined).map(field => field.field)
-}
-
-/** Default rows for the footer's "apply defaults" action. */
-export function defaultApplySelection(diff: BindingDiff): ApplySelection[] {
-  const rows: ApplySelection[] = []
-  for (const row of diff.added) rows.push({ id: row.id, mode: 'add' })
-  for (const row of diff.updates) {
-    const fields = row.fields.map(field => field.field)
-    if (fields.length > 0) rows.push({ id: row.id, mode: 'update', fields })
-  }
-  for (const row of diff.conflicts) {
-    const fields = gapFields(row)
-    if (fields.length > 0) rows.push({ id: row.id, mode: 'update', fields })
-  }
-  return rows
-}
-
-function defaultSelection(diff: BindingDiff): Map<string, SelectionEntry> {
-  const map = new Map<string, SelectionEntry>()
-  for (const row of diff.added) map.set(row.id, entryFor('add', []))
-  for (const row of diff.updates) map.set(row.id, entryFor('update', row.fields.map(field => field.field)))
-  // Conflicts default to filling only fields the model does not set; values it
-  // already sets stay unchecked (DESIGN §5).
-  for (const row of diff.conflicts) map.set(row.id, entryFor('update', gapFields(row)))
-  for (const row of diff.removed) map.set(row.id, entryFor('remove', []))
-  for (const row of diff.candidates) map.set(row.id, entryFor('add', []))
-  return map
-}
 
 export interface DiffPanelProps {
   route: string
@@ -58,10 +15,12 @@ export interface DiffPanelProps {
   t: Translate
   /** Parent reloads `helper.status`; the panel stays mounted until re-check. */
   onApplied: (message: string) => void
+  /** Ask the parent to run check-update again (the diff's revision may be stale). */
+  onRecheck: () => void
 }
 
 export function DiffPanel(props: DiffPanelProps): ReactElement {
-  const { route, diff, api, t, onApplied } = props
+  const { route, diff, api, t, onApplied, onRecheck } = props
   const [selection, setSelection] = React.useState<Map<string, SelectionEntry>>(() => defaultSelection(diff))
   const [locked, setLocked] = React.useState<Set<string>>(() => new Set(diff.locked))
   const [busy, setBusy] = React.useState(false)
@@ -81,9 +40,7 @@ export function DiffPanel(props: DiffPanelProps): ReactElement {
     setSelection((previous) => {
       const next = new Map(previous)
       if (!checked) next.delete(row.id)
-      else if (row.kind === 'added' || row.kind === 'candidate') next.set(row.id, entryFor('add', []))
-      else if (row.kind === 'removed') next.set(row.id, entryFor('remove', []))
-      else next.set(row.id, entryFor('update', row.fields.map(field => field.field)))
+      else next.set(row.id, entryForRow(row))
       return next
     })
   }
@@ -91,7 +48,7 @@ export function DiffPanel(props: DiffPanelProps): ReactElement {
   const toggleField = (row: ModelDiff, field: ModelFieldName, checked: boolean): void => {
     setSelection((previous) => {
       const next = new Map(previous)
-      const current = next.get(row.id) ?? entryFor('update', [])
+      const current = next.get(row.id) ?? { mode: 'update' as const, fields: new Set<ModelFieldName>() }
       const fields = new Set(current.fields)
       if (checked) fields.add(field)
       else fields.delete(field)
@@ -108,7 +65,7 @@ export function DiffPanel(props: DiffPanelProps): ReactElement {
     const result = await api.call('binding.lock', { route, model: row.id, field, locked: nextLocked })
     setBusy(false)
     if (!result.ok) {
-      setError(result.error.message)
+      setError(errorText(t, result.error))
       return
     }
     setLocked(new Set(result.value.locked))
@@ -138,7 +95,7 @@ export function DiffPanel(props: DiffPanelProps): ReactElement {
     const result = await api.call('binding.apply', { route, revision: diff.revision, selection: rows })
     setBusy(false)
     if (!result.ok) {
-      setError(result.error.message)
+      setError(errorText(t, result.error))
       return
     }
     setMessage(t('diff.applied', { count: rows.length }))
@@ -154,20 +111,35 @@ export function DiffPanel(props: DiffPanelProps): ReactElement {
 
   const fieldChecked = (row: ModelDiff, field: ModelFieldName): boolean => selection.get(row.id)?.fields.has(field) === true
 
+  const toggleGroup = (rows: readonly ModelDiff[], selectAll: boolean): void => {
+    setSelection((previous) => {
+      const next = new Map(previous)
+      for (const row of rows) {
+        if (!selectAll) next.delete(row.id)
+        else {
+          const entry = entryForRow(row)
+          if (entry.mode === 'update' && entry.fields.size === 0) continue
+          next.set(row.id, entry)
+        }
+      }
+      return next
+    })
+  }
+
   const fieldRow = (row: ModelDiff, change: FieldDiff, selectable: boolean): ReactElement => {
     const key = `${row.id}/${change.field}`
     const isLocked = locked.has(key)
     return (
       <div className="dmh-field" key={change.field}>
         {selectable ? (
-          <input type="checkbox" checked={fieldChecked(row, change.field)} disabled={busy || isLocked} onChange={event => toggleField(row, change.field, event.target.checked)} />
+          <input type="checkbox" checked={fieldChecked(row, change.field)} disabled={busy || isLocked} aria-label={`${row.id} ${fieldLabel(t, change.field)}`} onChange={event => toggleField(row, change.field, event.target.checked)} />
         ) : <span className="dmh-muted">·</span>}
         <span className="dmh-muted">{fieldLabel(t, change.field)}</span>
         {change.old === undefined ? null : <span className="dmh-old dmh-mono">{fieldText(change.old)}</span>}
         {change.old === undefined ? null : <span className="dmh-muted">→</span>}
         <span className="dmh-new dmh-mono">{fieldText(change.new)}</span>
         <ProvenanceBadge t={t} provenance={change.provenance} />
-        <button type="button" className="dmh-lock" title={t('diff.lock')} disabled={busy} onClick={() => { void toggleLock(row, change.field) }}>
+        <button type="button" className="dmh-lock" title={t('diff.lock')} aria-pressed={isLocked} aria-label={`${isLocked ? t('diff.unlockField') : t('diff.lockField')} ${row.id} ${fieldLabel(t, change.field)}`} disabled={busy} onClick={() => { void toggleLock(row, change.field) }}>
           {isLocked ? '🔒' : '🔓'}
         </button>
       </div>
@@ -178,7 +150,14 @@ export function DiffPanel(props: DiffPanelProps): ReactElement {
     if (rows.length === 0) return null
     return (
       <div className="dmh-group">
-        <div className="dmh-row"><span className="dmh-sub">{title}</span>{hint === undefined ? null : <span className="dmh-hint">{hint}</span>}</div>
+        <div className="dmh-row dmh-spread">
+          <div className="dmh-row"><span className="dmh-sub">{title}</span>{hint === undefined ? null : <span className="dmh-hint">{hint}</span>}</div>
+          {selectable ? (
+            <button type="button" className="dmh-link" disabled={busy} onClick={() => toggleGroup(rows, !rows.every(row => checked(row)))}>
+              {rows.every(row => checked(row)) ? t('diff.unselectAll') : t('diff.selectAll')}
+            </button>
+          ) : null}
+        </div>
         <ul className="dmh-list dmh-scroll">
           {rows.map(row => (
             <li key={row.id} style={{ display: 'block' }}>
@@ -198,7 +177,7 @@ export function DiffPanel(props: DiffPanelProps): ReactElement {
     return (
       <div className="dmh-group" data-dmh-diff={route}>
         <Styles />
-        <Banner kind="err">{t('diff.error', { message: diff.error })}</Banner>
+        <Banner kind="err">{diffErrorText(t, diff)}</Banner>
       </div>
     )
   }
@@ -240,6 +219,9 @@ export function DiffPanel(props: DiffPanelProps): ReactElement {
       <div className="dmh-actions">
         <button type="button" className="dmh-button dmh-button-primary" disabled={busy || selectedCount === 0} onClick={() => { void apply() }}>
           {busy ? t('diff.applying') : t('diff.apply')}
+        </button>
+        <button type="button" className="dmh-button" disabled={busy} onClick={() => onRecheck()}>
+          {t('diff.recheck')}
         </button>
       </div>
     </div>

@@ -106,6 +106,62 @@ export interface CredentialsService {
   unset(ref: string): Promise<unknown>
 }
 
+// ---------------------------------------------------------------------------
+// Tool registry (`@deepseek-ai/dsh-tools`)
+//
+// The registry accepts a plain definition object and only calls
+// `output.render`/`execute`, so the bundle can register tools without
+// importing any DSH package. Shapes mirror the installed 0.2.2-rc.2 source.
+// ---------------------------------------------------------------------------
+
+/** One model-facing content block returned by a tool renderer. */
+export interface ToolContentBlock {
+  type: 'text'
+  text: string
+}
+
+/** Execution identity passed to a tool body. */
+export interface ToolRunContext {
+  readonly signal?: AbortSignal
+  readonly callId?: string
+  readonly agent?: unknown
+}
+
+/** Canonical output declaration required by `tools.register`. */
+export interface ToolOutputDefinition {
+  readonly schema: Record<string, unknown>
+  render(args: unknown, value: unknown): ToolContentBlock[]
+}
+
+/** One registered tool definition. */
+export interface ToolDefinition {
+  readonly name: string
+  readonly description: string
+  readonly parameters: Record<string, unknown>
+  readonly output: ToolOutputDefinition
+  execute(args: unknown, exec: ToolRunContext): Promise<unknown>
+  readonly timeoutMs?: number
+  isConcurrencySafe?(args: unknown): boolean
+}
+
+/** `ctx.tools` surface used by this plugin. */
+export interface ToolsService {
+  register(definition: ToolDefinition): () => void
+}
+
+/** Decision returned by a `tools/pre-execute` listener. */
+export type PreToolDecision =
+  | { kind: 'allow' }
+  | { kind: 'deny'; reason: string }
+  | { kind: 'cancel' }
+  | { kind: 'ask'; reason?: string; displayReason?: { readonly en: string; readonly [locale: string]: string } }
+
+/** The pending call a `tools/pre-execute` listener receives. */
+export interface PendingToolCall {
+  readonly name: string
+  readonly arguments: unknown
+}
+
 /** The subset of a Cordis Context this plugin uses. */
 export interface HostContext {
   readonly logger: Logger
@@ -120,6 +176,7 @@ export interface HostContext {
   get(name: 'agentDefaultModel'): AgentDefaultModelService | undefined
   get(name: 'credentials'): CredentialsService | undefined
   get(name: 'sessionProjections'): SessionProjectionRegistry | undefined
+  get(name: 'tools'): ToolsService | undefined
   get(name: string): unknown
   effect(callback: () => (() => unknown) | void, label?: string): () => Promise<void>
   inject(deps: string[], callback: (ctx: HostContext) => void): unknown

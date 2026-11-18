@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "Models helper",
-    "description": "Clone a built-in provider into custom providers whose models, parameters and prices stay in sync with models.dev and OpenRouter, without retyping every model. Preview: currently runs the M0 feasibility checks on Settings → Models."
+    "description": "Clone built-in providers into custom providers whose models, parameters and prices stay in sync with models.dev and OpenRouter. Review field-level updates in Settings → Models, lock fields, edit prices, and see per-turn and per-session cost in conversations. Agent tools can read status and diffs and apply changes only after your approval. The plugin contacts the network only for clone, check-update and cache-refresh actions.",
+    "detail": "docs/DETAIL.md"
   }
 }

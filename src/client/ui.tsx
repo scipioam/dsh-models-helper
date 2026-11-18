@@ -3,8 +3,10 @@ import type { ReactElement, ReactNode } from 'react'
 import { React } from './runtime.ts'
 import type { HelperApi } from './api.ts'
 import type { Translate } from './dsh.ts'
+import type { RpcFailure } from '../shared/rpc.ts'
 import { CSS } from './styles.ts'
 import type { HelperStatus, ModelFieldName, Provenance, SourceRef } from '../shared/rpc.ts'
+import { errorText } from './errors.ts'
 
 export interface InjectedApi {
   api: HelperApi
@@ -15,23 +17,51 @@ export function Styles(): ReactElement {
 }
 
 /** One reloadable snapshot of `helper.status`, shared by the card and footer. */
-export function useStatus(api: HelperApi): { status?: HelperStatus; error?: string; reload: () => Promise<void>; busy: boolean } {
-  const [status, setStatus] = React.useState<HelperStatus | undefined>(undefined)
-  const [error, setError] = React.useState<string | undefined>(undefined)
-  const [busy, setBusy] = React.useState(false)
-  const reload = React.useCallback(async () => {
-    setBusy(true)
+interface StatusState {
+  status?: HelperStatus
+  error?: RpcFailure
+  busy: boolean
+}
+
+// One shared snapshot for every card and the footer. A binding change in one
+// card refreshes all of them, instead of leaving a stale footer until reload.
+let statusState: StatusState = { busy: false }
+const statusListeners = new Set<() => void>()
+let statusInflight: Promise<void> | undefined
+
+function publishStatus(next: StatusState): void {
+  statusState = next
+  for (const listener of statusListeners) listener()
+}
+
+async function loadStatus(api: HelperApi): Promise<void> {
+  if (statusInflight !== undefined) return statusInflight
+  publishStatus({ ...statusState, busy: true })
+  const work = (async () => {
     const result = await api.call('helper.status', {})
-    setBusy(false)
-    if (result.ok) {
-      setStatus(result.value)
-      setError(undefined)
-    } else {
-      setError(result.error.message)
+    if (result.ok) publishStatus({ status: result.value, busy: false })
+    else publishStatus({ ...statusState, error: result.error, busy: false })
+  })()
+  statusInflight = work
+  try {
+    await work
+  } finally {
+    statusInflight = undefined
+  }
+}
+
+export function useStatus(api: HelperApi): { status?: HelperStatus; error?: RpcFailure; reload: () => Promise<void>; busy: boolean } {
+  const [snapshot, setSnapshot] = React.useState<StatusState>(statusState)
+  React.useEffect(() => {
+    const listener = (): void => setSnapshot(statusState)
+    statusListeners.add(listener)
+    listener()
+    if (statusState.status === undefined && statusState.error === undefined && !statusState.busy) {
+      void loadStatus(api)
     }
+    return () => { statusListeners.delete(listener) }
   }, [api])
-  React.useEffect(() => { void reload() }, [reload])
-  return { status, error, reload, busy }
+  return { status: snapshot.status, error: snapshot.error, busy: snapshot.busy, reload: () => loadStatus(api) }
 }
 
 export function Banner({ kind, children }: { kind: 'ok' | 'warn' | 'err'; children: ReactNode }): ReactElement {
@@ -71,7 +101,7 @@ export function ProvenanceBadge({ t, provenance }: { t: Translate; provenance: P
   return <span className={`dmh-badge${provenance === 'inferred' ? ' dmh-badge-warn' : ''}`}>{t(`provenance.${provenance}`)}</span>
 }
 
-/** Reusable busy/error banner pair. */
-export function Failure({ message, t }: { message: string | undefined; t: Translate }): ReactElement | null {
-  return message === undefined ? null : <Banner kind="err">{t('error', { message })}</Banner>
+/** Reusable error banner that localizes a Host failure by code. */
+export function Failure({ error, t }: { error: RpcFailure | undefined; t: Translate }): ReactElement | null {
+  return error === undefined ? null : <Banner kind="err">{errorText(t, error)}</Banner>
 }

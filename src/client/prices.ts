@@ -5,12 +5,12 @@
  */
 import { React } from './runtime.ts'
 import type { HelperApi } from './api.ts'
-import type { PricesResult } from '../shared/rpc.ts'
+import type { PricesResult, RpcFailure } from '../shared/rpc.ts'
 
 export interface PriceTableState {
   status: 'idle' | 'loading' | 'ready' | 'error'
   table?: PricesResult
-  error?: string
+  error?: RpcFailure
 }
 
 let current: PriceTableState = { status: 'idle' }
@@ -42,7 +42,7 @@ export async function loadPrices(api: HelperApi, force = false): Promise<void> {
   inflight = (async () => {
     const result = await api.call('prices.list', {})
     if (result.ok) publish({ status: 'ready', table: result.value })
-    else publish({ status: 'error', error: result.error.message })
+    else publish({ status: 'error', error: result.error })
   })()
   try {
     await inflight
@@ -57,9 +57,9 @@ export async function savePriceOverride(
   route: string,
   model: string,
   price: { input: number; output: number; cacheRead?: number; cacheWrite?: number } | null,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true } | { ok: false; error: RpcFailure }> {
   const result = await api.call('prices.setOverride', { route, model, price })
-  if (!result.ok) return { ok: false, message: result.error.message }
+  if (!result.ok) return { ok: false, error: result.error }
   await loadPrices(api, true)
   return { ok: true }
 }

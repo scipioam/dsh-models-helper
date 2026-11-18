@@ -12,7 +12,8 @@ import type {
   ClonePlan,
   SourceRef,
 } from '../shared/rpc.ts'
-import { Banner, Styles } from './ui.tsx'
+import { errorText } from './errors.ts'
+import { Banner, fmtTime, Styles } from './ui.tsx'
 
 interface GroupState {
   selected: boolean
@@ -86,7 +87,7 @@ export function CloneWizard(props: CloneWizardProps): ReactElement {
     const result = await api.call('clone.apply', { provider: plan.provider, source: plan.source, groups: chosen })
     setBusy(false)
     if (result.ok) onDone(result.value)
-    else setError(result.error.message)
+    else setError(errorText(t, result.error))
   }
 
   const groupCard = (group: CloneGroup): ReactElement => {
@@ -96,7 +97,7 @@ export function CloneWizard(props: CloneWizardProps): ReactElement {
     const search = state.search.trim().toLowerCase()
     const models = group.models.filter(model => search.length === 0 || model.id.toLowerCase().includes(search))
     const toggleAll = (checked: boolean): void => {
-      update(key, current => ({ ...current, modelIds: checked ? new Set(group.models.map(model => model.id)) : new Set() }))
+      update(key, current => ({ ...current, modelIds: checked ? new Set(models.map(model => model.id)) : new Set() }))
     }
     return (
       <div className="dmh-group" key={key}>
@@ -169,7 +170,7 @@ export function CloneWizard(props: CloneWizardProps): ReactElement {
       </div>
       <div className="dmh-muted">{t('clone.source', { source: plan.source.kind === 'openrouter' ? t('source.openrouter') : `${t('source.models-dev')} · ${plan.source.provider}${plan.sourceName === undefined ? '' : ` (${plan.sourceName})`}` })}</div>
       {plan.templateVersion === undefined ? null : <div className="dmh-muted">{t('clone.templateVersion', { version: plan.templateVersion })}</div>}
-      {plan.online ? null : <Banner kind="warn">{t('clone.stale', { time: plan.fetchedAt, reason: plan.staleReason ?? '' })}</Banner>}
+      {plan.online ? null : <Banner kind="warn">{t('clone.stale', { time: fmtTime(plan.fetchedAt, t), reason: plan.staleReason ?? '' })}</Banner>}
       {isOpenRouter ? (
         <div className="dmh-actions">
           <button type="button" className="dmh-button" onClick={() => onSource({ kind: 'models-dev', provider: plan.provider })}>{t('source.models-dev')}</button>
@@ -223,7 +224,7 @@ export function BindPanel(props: BindPanelProps): ReactElement {
     })
     setBusy(false)
     if (result.ok) onBound(result.value.diff)
-    else setError(result.error.message)
+    else setError(errorText(t, result.error))
   }
 
   return (

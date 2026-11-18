@@ -11,6 +11,7 @@ import { resetTemplateCatalog } from './pi-ai.ts'
 import { usageTotalsProjection, usageTurnsProjection } from './usage.ts'
 import { pricesList, setPriceOverride } from './prices.ts'
 import { registerRpc } from './rpc.ts'
+import { registerAgentTools } from './tools.ts'
 import {
   bindOptions,
   bindingApply,
@@ -66,6 +67,13 @@ export function apply(ctx: HostContext): void {
       'prices.setOverride': args => setPriceOverride(ctx, args),
     }, ctx.logger)
     scoped.effect(() => dispose, 'models-helper: rpc route')
+  })
+  // M3: agent tools. The same Host actions the Models page calls, plus an
+  // approval gate for the writing tool. Optional injection keeps the plugin
+  // loadable on compositions without the tool registry.
+  ctx.inject(['tools'], (scoped) => {
+    const dispose = registerAgentTools(scoped)
+    scoped.effect(() => dispose, 'models-helper: agent tools')
   })
   // M2: per-turn/per-route token usage for the conversation slots. Registered
   // under an optional injection so the plugin still loads on compositions

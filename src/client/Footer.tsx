@@ -4,16 +4,18 @@ import { React } from './runtime.ts'
 import type { HelperApi } from './api.ts'
 import type { Translate } from './dsh.ts'
 import type { BindingDiff } from '../shared/rpc.ts'
+import { defaultApplySelection } from '../shared/selection.ts'
+import { diffErrorText, errorText } from './errors.ts'
 import { Banner, fmtTime, sourceLabel, Styles, useStatus } from './ui.tsx'
-import { defaultApplySelection } from './DiffPanel.tsx'
 
 export function Footer(props: { api: HelperApi; t: Translate }): ReactElement {
   const { api, t } = props
-  const { status, error, reload } = useStatus(api)
+  const { status, error, reload, busy: statusBusy } = useStatus(api)
   const [results, setResults] = React.useState<BindingDiff[] | undefined>(undefined)
   const [busy, setBusy] = React.useState<string | undefined>(undefined)
-  const [notice, setNotice] = React.useState<string | undefined>(undefined)
+  const [notice, setNotice] = React.useState<{ kind: 'ok' | 'warn'; text: string } | undefined>(undefined)
   const [actionError, setActionError] = React.useState<string | undefined>(undefined)
+  const [confirmUnbind, setConfirmUnbind] = React.useState<string | undefined>(undefined)
 
   const checkAll = async (): Promise<void> => {
     setBusy('check')
@@ -25,7 +27,7 @@ export function Footer(props: { api: HelperApi; t: Translate }): ReactElement {
       setResults(result.value.results)
       await reload()
     } else {
-      setActionError(result.error.message)
+      setActionError(errorText(t, result.error))
     }
   }
 
@@ -37,10 +39,10 @@ export function Footer(props: { api: HelperApi; t: Translate }): ReactElement {
     const result = await api.call('binding.apply', { route: diff.route, revision: diff.revision, selection })
     setBusy(undefined)
     if (!result.ok) {
-      setActionError(result.error.message)
+      setActionError(errorText(t, result.error))
       return
     }
-    setNotice(`${diff.route}: ${t('footer.applied')}`)
+    setNotice({ kind: 'ok', text: `${diff.route}: ${t('footer.applied')}` })
     setResults(previous => previous?.filter(row => row.route !== diff.route))
     await reload()
   }
@@ -52,19 +54,23 @@ export function Footer(props: { api: HelperApi; t: Translate }): ReactElement {
     const result = await api.call('cache.refresh', {})
     setBusy(undefined)
     if (result.ok) {
-      setNotice(result.value.online ? t('footer.refreshDone') : result.value.staleReason ?? t('footer.refreshDone'))
+      setNotice(result.value.online
+        ? { kind: 'ok', text: t('footer.refreshDone') }
+        : { kind: 'warn', text: t('footer.refreshOffline', { reason: result.value.staleReason ?? t('time.unknown') }) })
       await reload()
     } else {
-      setActionError(result.error.message)
+      setActionError(errorText(t, result.error))
     }
   }
 
   const unbind = async (route: string): Promise<void> => {
     setBusy(`unbind:${route}`)
+    setActionError(undefined)
     const result = await api.call('binding.unbind', { route })
     setBusy(undefined)
+    setConfirmUnbind(undefined)
     if (!result.ok) {
-      setActionError(result.error.message)
+      setActionError(errorText(t, result.error))
       return
     }
     setResults(previous => previous?.filter(row => row.route !== route))
@@ -102,9 +108,10 @@ export function Footer(props: { api: HelperApi; t: Translate }): ReactElement {
         </div>
       </div>
 
-      {error === undefined ? null : <Banner kind="err">{t('error', { message: error })}</Banner>}
+      {error === undefined ? null : <Banner kind="err">{errorText(t, error)} <button type="button" className="dmh-button" disabled={busy !== undefined} onClick={() => { void reload() }}>{t('retry')}</button></Banner>}
+      {status === undefined && error === undefined && statusBusy ? <div className="dmh-hint">{t('busy')}</div> : null}
       {actionError === undefined ? null : <Banner kind="err">{t('error', { message: actionError })}</Banner>}
-      {notice === undefined ? null : <Banner kind="ok">{notice}</Banner>}
+      {notice === undefined ? null : <Banner kind={notice.kind}>{notice.text}</Banner>}
       {bindings.length === 0 ? <div className="dmh-muted">{t('footer.none')}</div> : null}
 
       {bindings.length === 0 ? null : (
@@ -116,8 +123,17 @@ export function Footer(props: { api: HelperApi; t: Translate }): ReactElement {
                 <span className="dmh-mono">{binding.route}</span>
                 <span className="dmh-muted">{sourceLabel(t, binding.source)}</span>
                 <span className="dmh-muted">{binding.lastSync === undefined ? t('time.never') : t('time.lastSync', { time: fmtTime(binding.lastSync, t) })}</span>
-                {routeIds.has(binding.route) ? null : (
-                  <button type="button" className="dmh-button dmh-button-danger" disabled={busy !== undefined} onClick={() => { void unbind(binding.route) }}>
+                {routeIds.has(binding.route) ? null : confirmUnbind === binding.route ? (
+                  <>
+                    <button type="button" className="dmh-button dmh-button-danger" disabled={busy !== undefined} onClick={() => { void unbind(binding.route) }}>
+                      {t('footer.unbindConfirm')}
+                    </button>
+                    <button type="button" className="dmh-button" disabled={busy !== undefined} onClick={() => setConfirmUnbind(undefined)}>
+                      {t('footer.unbindCancel')}
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="dmh-button dmh-button-danger" disabled={busy !== undefined} onClick={() => setConfirmUnbind(binding.route)}>
                     {t('footer.unbind')}
                   </button>
                 )}
@@ -134,8 +150,8 @@ export function Footer(props: { api: HelperApi; t: Translate }): ReactElement {
           <ul className="dmh-list">
             {results.map(diff => {
               const counts = diff.error === undefined
-                ? `${t('diff.added', { count: diff.added.length })} · ${t('diff.updates', { count: diff.updates.length })} · ${t('diff.conflicts', { count: diff.conflicts.length })} · ${t('diff.removed', { count: diff.removed.length })}`
-                : t('diff.error', { message: diff.error })
+                ? `${t('diff.added', { count: diff.added.length })} · ${t('diff.candidates', { count: diff.candidates.length })} · ${t('diff.updates', { count: diff.updates.length })} · ${t('diff.conflicts', { count: diff.conflicts.length })} · ${t('diff.removed', { count: diff.removed.length })}${diff.locked.length === 0 ? '' : ` · ${t('card.lockedCount', { count: diff.locked.length })}`}`
+                : diffErrorText(t, diff)
               const selection = defaultApplySelection(diff)
               return (
                 <li key={diff.route} style={{ display: 'block' }}>

@@ -10,7 +10,8 @@ import type { HelperApi } from './api.ts'
 import type { Translate } from './dsh.ts'
 import type { ModelPriceView, Price } from '../shared/rpc.ts'
 import { fmtTime, Styles } from './ui.tsx'
-import { savePriceOverride, usePriceTable } from './prices.ts'
+import { errorText } from './errors.ts'
+import { loadPrices, savePriceOverride, usePriceTable } from './prices.ts'
 
 interface Draft {
   input: string
@@ -69,7 +70,15 @@ export function PriceTable(props: { route: string; api: HelperApi; t: Translate 
   const [note, setNote] = React.useState<string | undefined>(undefined)
 
   const table = prices.table?.routes.find(row => row.route === route)
-  if (table === undefined) return prices.status === 'error' ? <div className="dmh-hint">{t('error', { message: prices.error ?? '' })}</div> : null
+  if (table === undefined) {
+    if (prices.status !== 'error' || prices.error === undefined) return null
+    return (
+      <div className="dmh-hint">
+        {errorText(t, prices.error)}{' '}
+        <button type="button" className="dmh-link" onClick={() => { void loadPrices(api, true) }}>{t('retry')}</button>
+      </div>
+    )
+  }
 
   const startEdit = (model: ModelPriceView): void => {
     setEditing(model.id)
@@ -96,13 +105,25 @@ export function PriceTable(props: { route: string; api: HelperApi; t: Translate 
       if (model.price?.tiers !== undefined) price.tiers = model.price.tiers
       const cacheRead = parseField(draft.cacheRead)
       const cacheWrite = parseField(draft.cacheWrite)
+      // An invalid cache value must not be silently dropped: that would save a
+      // price different from what the user typed.
+      if (draft.cacheRead.trim().length > 0 && cacheRead === undefined) {
+        setBusy(undefined)
+        setError(t('prices.invalid'))
+        return
+      }
+      if (draft.cacheWrite.trim().length > 0 && cacheWrite === undefined) {
+        setBusy(undefined)
+        setError(t('prices.invalid'))
+        return
+      }
       if (cacheRead !== undefined) price.cacheRead = cacheRead
       if (cacheWrite !== undefined) price.cacheWrite = cacheWrite
     }
     const result = await savePriceOverride(api, route, model.id, price)
     setBusy(undefined)
     if (!result.ok) {
-      setError(result.message)
+      setError(errorText(t, result.error))
       return
     }
     setEditing(undefined)
@@ -123,7 +144,6 @@ export function PriceTable(props: { route: string; api: HelperApi; t: Translate 
         </span>
       </div>
       {note === undefined ? null : <div className="dmh-hint">{note}</div>}
-      {error === undefined ? null : <div className="dmh-banner dmh-banner-err">{error}</div>}
       {!open ? null : (
         <div className="dmh-price-list">
           <div className="dmh-hint">{t('prices.hint')}</div>
@@ -132,6 +152,7 @@ export function PriceTable(props: { route: string; api: HelperApi; t: Translate 
               <div className="dmh-price-main">
                 <span className="dmh-mono dmh-price-model">{model.id}</span>
                 <span className="dmh-price-nums" title={tierText(model.price)}>{priceText(model.price, t)}</span>
+                {tierText(model.price) === undefined ? null : <span className="dmh-muted">{t('prices.tiers', { tiers: tierText(model.price) ?? '' })}</span>}
                 <span className={`dmh-badge${model.source === 'override' ? ' dmh-badge-ok' : model.source === 'none' ? ' dmh-badge-err' : ''}`}>
                   {sourceLabel(t, model.source)}
                 </span>
@@ -156,13 +177,16 @@ export function PriceTable(props: { route: string; api: HelperApi; t: Translate 
                       />
                     </label>
                   ))}
+                  {error === undefined ? null : <div className="dmh-banner dmh-banner-err">{error}</div>}
                   <div className="dmh-actions">
                     <button type="button" className="dmh-button dmh-button-primary" disabled={busy !== undefined} onClick={() => { void save(model, false) }}>
                       {busy === model.id ? t('busy') : t('prices.save')}
                     </button>
-                    <button type="button" className="dmh-button" disabled={busy !== undefined} onClick={() => { void save(model, true) }}>
-                      {t('prices.reset')}
-                    </button>
+                    {model.source === 'override' ? (
+                      <button type="button" className="dmh-button" disabled={busy !== undefined} onClick={() => { void save(model, true) }}>
+                        {t('prices.reset')}
+                      </button>
+                    ) : null}
                     <button type="button" className="dmh-button" disabled={busy !== undefined} onClick={() => setEditing(undefined)}>
                       {t('cancel')}
                     </button>

@@ -25,6 +25,7 @@
 2. 已有自定义供应商可事后绑定参数来源。
 3. 手动"检查更新 → 字段级差异 → 勾选应用"；每次检查更新都强制联网获取最新数据，并刷新本地价格快照；自动识别并保护手改值。
 4. 每个模型的单价展示与编辑（本地价格快照，可手动覆盖、可恢复来源价）；估算每轮、会话（含子智能体）花费并显示在对话界面；估算只读本地价格表，不联网。
+5. 智能体可以读取供应商状态、检查更新，并在用户审批后应用差异；工具与界面调用同一套 Host 操作，结果有界。
 
 **非目标（v1）**
 
@@ -209,6 +210,8 @@ Host（index.js）
 ├─ SnapshotStore       模型字段快照 → 数据目录 snapshots.json（派生缓存）
 ├─ Writer              settings.mutate('llm-pi-ai', ops, revision)
 ├─ CostProjection      modelsHelperUsage（summary）+ modelsHelperTurns（attached）两个 sessionProjections 单元 + wire.view（只投影 token，不算钱）
+├─ ToolSurface         models_helper_status / check / apply → 复用 helperStatus / bindingDiff / bindingApply；
+│                      tools/pre-execute 只对 apply 返回 ask，结果经 tool-summary 裁剪
 └─ RPC 端点            供 Client 调用（clone / bind / diff / apply / prices / refresh）
 Client（client.js，esbuild 由 JSX 打包）
 ├─ provider-card 面板 / 克隆向导 / 差异面板 / 价格表（读写同一份本地价格表）
@@ -217,7 +220,7 @@ Client（client.js，esbuild 由 JSX 打包）
 └─ 内存价格表：prices.list 一次取得；改价或路由变更后重取，所有估算随之重算
 ```
 
-**网络边界**：任何页面渲染、差异展示、价格表展示与花费估算都只读本地数据（缓存 / 价格快照 / 插件配置 / 模板），不联网。联网只发生在用户显式动作：克隆、检查更新（含全部检查更新）、页脚「刷新」。页脚刷新只更新元数据缓存，不改价格快照；价格快照只随克隆与检查更新更新。
+**网络边界**：任何页面渲染、差异展示、价格表展示与花费估算都只读本地数据（缓存 / 价格快照 / 插件配置 / 模板），不联网。联网只发生在显式动作：克隆、检查更新（含全部检查更新）、页脚「刷新」，以及智能体的 `models_helper_check`（它等价于一次检查更新）。页脚刷新只更新元数据缓存，不改价格快照；价格快照只随克隆、检查更新与工具 check 更新。
 
 ## 10. 风险与已知限制
 
@@ -231,6 +234,9 @@ Client（client.js，esbuild 由 JSX 打包）
 - **删除原路由会删 key（已隔离）**：模型页删除路由会 `credentials.unset` 该路由的引用。M1 起克隆路由使用自己的 `<ROUTE>_API_KEY`（克隆时复制原 key），删除或改键原路由不再影响克隆；早期共享引用的克隆可在卡片上点「创建独立密钥」修复，原路由卡片在其仍被共享时继续提示。
 - **花费为估算**：按本地价格快照计算，不追溯历史价格；不含网关额外费用（如 OpenRouter web search）。
 - **分段价的近似**：投影按 `(turn, provider, model)` 聚合 token，Client 用聚合后的 prompt 数选段。同一轮（或同一会话累计）内多次调用跨越分段阈值时，估算会与逐次选段的结果有偏差；单次调用的轮次是精确的。
+- **智能体写入依赖审批通道**：`models_helper_apply` 通过 `tools/pre-execute` 请求一次性审批；没有审批应答者、审批被拒/取消、或会话策略为 `never` 时不写入。这是有意的失败关闭，不提供绕过开关；无头组合中 apply 不可用，status/check 仍可用。
+- **工具结果需要裁剪**：check 的完整差异可能有几百个模型；工具只返回分组计数与有上限的样本，并标记 `truncated`。需要完整列表时在界面查看；不要声称工具结果等同于完整差异。
+- **工具 apply 依赖内存中的检查结果**：插件重载或 apply 成功后必须重新 check；旧 `revision` 会返回明确错误。
 
 ## 11. M0 技术验证结论（2026-11-13，DSH 0.2.2-rc.2）
 
@@ -265,6 +271,33 @@ Client（client.js，esbuild 由 JSX 打包）
 | 投影折叠是否与 DSH 统计一致 | ✅ 与 `tokenUsage` 逐桶相同（本会话实测 input 281,949 / output 121,044 / cacheRead 28,790,400 / cacheWrite 0），每轮单元同时含 turn 1 / turn 2 |
 | 对话区 slot 与 Client 渲染 | ✅ 用户确认（2026-11-18）：价格表可改价/恢复来源价；每轮与会话花费正常显示、点开有分项；金额与手算一致 |
 
-## 12. 里程碑
+## 11.2 M3 实现状态（2026-11-18）
 
-M0 技术验证 → M1 克隆、绑定与同步 → M2 价格与花费 → M3 智能体工具、打磨与发布。各阶段的任务、验收标准与进度统一维护在 [ROADMAP.md](../ROADMAP.md)，本文不再重复。
+| 问题 | 结论 |
+|---|---|
+| 无 DSH import 注册工具 | ✅ 定义对象带 `name`/`description`/`parameters`/`output`/`execute` 即可；`output.schema` 走受支持 JSON Schema 子集，`render` 返回内容块 |
+| 写入前审批 | ✅ `tools/pre-execute` 返回 `{ kind: 'ask' }`，由 `tools` 流水线调用 `ctx.approval.request`；拒绝/取消/无应答者/`never` 均不执行 |
+| 与界面同一实现 | ✅ 三个工具分别调用 `helperStatus` / `bindingDiff` / `bindingApply`；没有第二套业务逻辑 |
+| 选择安全 | ✅ `bindingApply` 校验选择必须落在最近一次 diff 内；新增/删除行、更新字段都在校验范围 |
+| 输出有界 | ✅ status 最多 100 条路由/绑定；check 每路由 20 行、总计 120 行、10 条价格变化；推荐选择超过 100 行时省略 |
+| 测试 | ✅ `pnpm run check`：tsc + 140 个测试 + esbuild；新增选择/摘要/工具注册/错误本地化/差异默认勾选测试 |
+| 运行中工具冒烟 | ✅ status 可用并已过滤为 5 条实际路由；check 在 `opencode-go-gemini` 上 online=true、1 个 candidate；apply 拒绝路径未写入；批准路径经 `approval/asked` → `approval/decided: allowed-once`，返回 `changed:1`、revision 3，status 的 modelCount 1→2、llmRevision 3 |
+| 图标/详情页渲染 | ⏳ 文件与路径已校验；最终视觉需用户刷新插件页确认 |
+
+## 12. 智能体工具（M3）
+
+| 工具 | 作用 | 网络/写入 | 实现 |
+|---|---|---|---|
+| `models_helper_status` | 路由、绑定、模板、缓存时间、默认模型 | 不联网、只读 | `helperStatus` |
+| `models_helper_check` | 单路由或全部检查更新；失败回退缓存 | 每次强制联网；刷新价格快照 | `bindingDiff` |
+| `models_helper_apply` | 按 `revision` + 推荐/显式选择应用差异 | 写 `llm-pi-ai`；执行前经 `ask` 审批 | `bindingApply` |
+
+- `check` 返回每个路由的分组计数、`revision`、推荐选择；模型行有上限，超出标记 `truncated`。
+- `apply` 接受 `accept: "recommended"`（与界面默认勾选相同）或显式 `selection`；显式选择必须是最近一次 diff 的子集。
+- 审批的 `displayReason` 带路由与新增/更新/删除计数，中英文都有；`reason` 供审计。
+- 工具错误映射为英文可行动消息并保留稳定 code；界面的错误按 code 本地化。
+- 工具结果进入会话日志与下一次请求，因此只返回摘要而不是原始 `DiffResult`。
+
+## 13. 里程碑
+
+M0 技术验证 → M1 克隆、绑定与同步 → M2 价格与花费 → M3 智能体工具、打磨与发布（M3.5 发布暂缓）。各阶段的任务、验收标准与进度统一维护在 [ROADMAP.md](../ROADMAP.md)，本文不再重复。

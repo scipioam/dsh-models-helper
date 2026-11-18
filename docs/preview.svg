@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" fill="none">
+  <!-- Source document (models.dev / OpenRouter) -->
+  <ellipse cx="106" cy="100" rx="58" ry="15" stroke="#6E98E3" stroke-width="3"/>
+  <path d="M48 100v88c0 8.3 26 15 58 15s58-6.7 58-15v-88" stroke="#6E98E3" stroke-width="3"/>
+  <path d="M48 129c0 8.3 26 15 58 15s58-6.7 58-15" stroke="#6E98E3" stroke-width="2.4"/>
+  <path d="M48 158c0 8.3 26 15 58 15s58-6.7 58-15" stroke="#6E98E3" stroke-width="2.4"/>
+  <rect x="76" y="84" width="34" height="6" rx="3" fill="#97B6EC"/>
+  <circle cx="140" cy="188" r="5" fill="#4C7FD9"/>
+
+  <!-- Sync arrows into the cloned provider card -->
+  <path d="M184 142c22 0 26-6 44-6" stroke="#4C7FD9" stroke-width="3.4" stroke-linecap="round"/>
+  <path d="M219 128l13 8-13 8" stroke="#4C7FD9" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M184 166c22 0 26 6 44 6" stroke="#97B6EC" stroke-width="3.4" stroke-linecap="round"/>
+  <path d="M219 164l13 8-13 8" stroke="#97B6EC" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Cloned provider card with model rows -->
+  <rect x="252" y="62" width="220" height="176" rx="16" stroke="#4C7FD9" stroke-width="3.4"/>
+  <rect x="276" y="86" width="80" height="10" rx="5" fill="#4C7FD9"/>
+  <rect x="276" y="116" width="132" height="12" rx="6" fill="#6E98E3"/>
+  <rect x="276" y="142" width="104" height="12" rx="6" fill="#97B6EC"/>
+  <rect x="276" y="168" width="146" height="12" rx="6" fill="#D7E3F7"/>
+  <rect x="276" y="194" width="86" height="12" rx="6" fill="#97B6EC"/>
+  <circle cx="428" cy="116" r="6" fill="#2E9E6B"/>
+  <circle cx="428" cy="142" r="6" fill="#2E9E6B"/>
+  <circle cx="428" cy="194" r="6" fill="#D08A2E"/>
+
+  <!-- Source-aware sync badge on the card -->
+  <circle cx="452" cy="216" r="24" fill="#4C7FD9"/>
+  <path d="M441 216a11 11 0 0 1 18.4-8" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+  <path d="M462 202v8h-8" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M462 216a11 11 0 0 1-18.4 8" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+  <path d="M441 230v-8h8" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Local price and cost estimate -->
+  <path d="M512 128h74a12 12 0 0 1 12 12v48a12 12 0 0 1-12 12h-74a12 12 0 0 1-12-12v-48a12 12 0 0 1 12-12Z" stroke="#4C7FD9" stroke-width="3.4"/>
+  <circle cx="530" cy="158" r="8" stroke="#4C7FD9" stroke-width="3"/>
+  <path d="M530 150v16" stroke="#4C7FD9" stroke-width="3" stroke-linecap="round"/>
+  <rect x="548" y="146" width="34" height="8" rx="4" fill="#97B6EC"/>
+  <rect x="548" y="162" width="50" height="8" rx="4" fill="#D7E3F7"/>
+  <path d="M524 210h56" stroke="#2E9E6B" stroke-width="3.4" stroke-linecap="round"/>
+  <circle cx="588" cy="210" r="5" fill="#2E9E6B"/>
+</svg>

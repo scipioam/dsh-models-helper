@@ -9,6 +9,7 @@ import type { HelperApi } from './api.ts'
 import type { ProviderCardOwnerProps, Translate } from './dsh.ts'
 import type { BindOptions, BindingDiff, CloneApplyResult, ClonePlan, SourceRef } from '../shared/rpc.ts'
 import { deriveKeyRef } from '../shared/rpc.ts'
+import { errorText } from './errors.ts'
 import { Banner, fmtTime, sourceLabel, Styles, useStatus } from './ui.tsx'
 import { DiffPanel } from './DiffPanel.tsx'
 import { BindPanel, CloneWizard } from './Wizards.tsx'
@@ -24,7 +25,7 @@ interface CardState {
 
 export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactElement {
   const { provider, t, api } = props
-  const { status, error, reload } = useStatus(api)
+  const { status, error, reload, busy: statusBusy } = useStatus(api)
   const [state, setState] = React.useState<CardState>({ kind: 'none' })
   const [busy, setBusy] = React.useState<string | undefined>(undefined)
   const [actionError, setActionError] = React.useState<string | undefined>(undefined)
@@ -44,7 +45,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
     const result = await api.call('clone.plan', { provider: provider.provider, ...source === undefined ? {} : { source } })
     setBusy(undefined)
     if (result.ok) setState({ kind: 'clone', clone: result.value })
-    else setActionError(result.error.message)
+    else setActionError(errorText(t, result.error))
   }
 
   const startBind = async (): Promise<void> => {
@@ -53,7 +54,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
     const result = await api.call('bind.options', { route: provider.provider })
     setBusy(undefined)
     if (result.ok) setState({ kind: 'bind', bind: result.value })
-    else setActionError(result.error.message)
+    else setActionError(errorText(t, result.error))
   }
 
   const check = async (): Promise<void> => {
@@ -66,7 +67,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
       const diff = result.value.results[0]
       if (diff !== undefined) setState({ kind: 'diff', diff })
     } else {
-      setActionError(result.error.message)
+      setActionError(errorText(t, result.error))
     }
   }
 
@@ -76,7 +77,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
     setBusy(undefined)
     setConfirmUnbind(false)
     if (!result.ok) {
-      setActionError(result.error.message)
+      setActionError(errorText(t, result.error))
       return
     }
     setState({ kind: 'none' })
@@ -95,7 +96,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
       setKeyMessage(t('card.splitKeyDone', { ref: result.value.ref }))
       await reload()
     } else {
-      setActionError(result.error.message)
+      setActionError(errorText(t, result.error))
     }
   }
 
@@ -105,7 +106,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
     const result = await api.call('binding.setAutoInclude', { route: provider.provider, autoIncludeNew: next })
     setBusy(undefined)
     if (result.ok) await reload()
-    else setActionError(result.error.message)
+    else setActionError(errorText(t, result.error))
   }
 
   const refreshLists = async (): Promise<void> => { await reload(); await loadPrices(api, true) }
@@ -115,7 +116,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
       <Styles />
       <div className="dmh-row dmh-spread">
         <div className="dmh-row">
-          <span className="dmh-title">{t('title')}</span>
+          <span className="dmh-title">{provider.displayName}</span>
           <span className="dmh-badge">{declared ? t('card.declared') : t('card.builtin')}</span>
           <span className="dmh-muted">{provider.provider}</span>
         </div>
@@ -145,7 +146,8 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
         )}
       </div>
 
-      {error === undefined ? null : <Banner kind="err">{t('error', { message: error })}</Banner>}
+      {error === undefined ? null : <Banner kind="err">{errorText(t, error)} <button type="button" className="dmh-button" disabled={busy !== undefined} onClick={() => { void reload() }}>{t('retry')}</button></Banner>}
+      {status === undefined && error === undefined && statusBusy ? <div className="dmh-hint">{t('busy')}</div> : null}
       {actionError === undefined ? null : <Banner kind="err">{t('error', { message: actionError })}</Banner>}
 
       {!declared && route !== undefined && route.sharedKeyWith !== undefined && route.sharedKeyWith.length > 0 ? (
@@ -185,8 +187,6 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
         </div>
       )}
 
-      {declared ? <PriceTable route={provider.provider} api={api} t={t} /> : null}
-
       {confirmUnbind ? (
         <div className="dmh-actions">
           <span className="dmh-warn">{t('card.unbindConfirm')}</span>
@@ -194,6 +194,8 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
           <button type="button" className="dmh-button" onClick={() => setConfirmUnbind(false)}>{t('cancel')}</button>
         </div>
       ) : null}
+
+      {declared ? <PriceTable route={provider.provider} api={api} t={t} /> : null}
 
       {applied === undefined ? null : <Banner kind="ok">{applied}</Banner>}
 
@@ -248,6 +250,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
             setApplied(message)
             void refreshLists()
           }}
+          onRecheck={() => { void check() }}
         />
       ) : null}
     </div>
@@ -264,7 +267,7 @@ function DefaultSuggestion(props: { api: HelperApi; t: Translate; suggestion: { 
     const result = await api.call('defaultModel.use', suggestion)
     setBusy(false)
     if (result.ok) setDone(true)
-    else setError(result.error.message)
+    else setError(errorText(t, result.error))
   }
   if (done) return <Banner kind="ok">{t('clone.switchDefault')}</Banner>
   return (

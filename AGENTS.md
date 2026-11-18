@@ -6,7 +6,7 @@
 
 ## 1. 一句话
 
-一个 DSH **bundle**，包含 Host 插件和 Web Client 插件：从 models.dev / OpenRouter 拉取模型元数据，结合 DSH 自带的 pi-ai 模型目录（作为 compat 与推理档位的模板），生成或更新 `llm-pi-ai` 中的自定义供应商配置；并依据会话用量估算花费。当前处于 **M2 已完成（2026-11-18）**：M1 的克隆/绑定/检查更新/字段锁/默认模型切换，以及 M2 的本地价格表、改价、每轮与会话（含子智能体）花费估算都已实现并通过运行中冒烟验证。M0 探针与 `probe-results/` 已清理。
+一个 DSH **bundle**，包含 Host 插件和 Web Client 插件：从 models.dev / OpenRouter 拉取模型元数据，结合 DSH 自带的 pi-ai 模型目录（作为 compat 与推理档位的模板），生成或更新 `llm-pi-ai` 中的自定义供应商配置；并依据会话用量估算花费。当前处于 **M3.0–M3.4 已完成（2026-11-18）**：M1 的克隆/绑定/检查更新/字段锁/默认模型切换、M2 的本地价格表与每轮/会话花费、M3 的三个智能体工具（状态/检查/审批后应用）、界面与本地化打磨、图标与详情页都已实现；M3.5 发布按用户要求暂缓。M0 探针与 `probe-results/` 已清理。
 
 ## 2. 必读顺序
 
@@ -48,6 +48,8 @@ vitest.config.ts        单 fork、文件串行、无测试文件时通过
 pnpm-workspace.yaml     不运行 esbuild 的安装脚本
 src/shared/rpc.ts       前后端共用的 RPC 约定：endpoint 常量、方法表、价格/用量类型与投影 key
 src/shared/cost.ts      纯计费公式：分段选档、缓存价回退、价格归一化、金额/Token 格式化
+src/shared/selection.ts 纯选择规则：默认勾选、差异子集校验（界面/页脚/工具共用）
+src/shared/errors.ts    RPC 错误码清单与 locale key 映射（本地化完整性测试用）
 src/host/
   index.ts              Host 入口：导出 name / Config / apply；在 connection 可用时注册 RPC 方法
   rpc.ts                精确 Fetch 路由 /api/dsh-models-helper/rpc，说 Connection 的 client-request/server-response 信封
@@ -65,6 +67,8 @@ src/host/
   usage.ts              两个 session projection 单元（总量 / 每轮）与 wire 视图
   usage-math.ts         带符号的用量增量运算
   actions.ts            用户操作的唯一实现：status / clone / bind / diff / apply / lock / unbind / cache / defaultModel
+  tools.ts              M3 智能体工具：status / check / apply + tools/pre-execute 审批门禁
+  tool-summary.ts       工具结果的有界投影（计数 + 截断的模型/字段/价格样本）
 src/client/
   index.tsx             Client 入口：window.__ModuleLoader__.load({ id, factory })，注册 locale 与 slot
   Card.tsx              供应商卡片面板：按内置 / 已绑定 / 未绑定渲染克隆、绑定、检查更新
@@ -76,14 +80,20 @@ src/client/
   api.ts                Host RPC 的类型化调用封装（传输错误折叠为 { ok: false }）
   dsh.ts                Client 侧 DSH 服务与 slot owner props 的结构类型
   prices.ts             Client 共享内存价格表（prices.list + 改价后失效重取）
+  errors.ts             RPC 失败按 code 本地化（含 diff.error）；未知 code 走通用文案
+  diff-selection.ts     差异面板的默认勾选（以 Host 的 defaultChecked 为准）
   Cost.tsx              每轮（turnTail）与会话（header utilities）花费显示
   cost-view.ts          花费显示的纯逻辑：预算、子会话聚合、投影值收窄
   Prices.tsx            供应商卡片内的价格表与内联改价
   locales.ts            zh / en 词典
   styles.ts             组件内样式（只用主题 token）
 test/                   vitest 单元测试：merge/diff/sources/normalize/cache/apply/actions/
-                        prices/usage/cost/cost-view，host-fixture.ts 提供内存版 HostContext
+                        prices/usage/cost/cost-view/selection/diff-selection/tools/
+                        tool-summary/locales，host-fixture.ts 提供内存版 HostContext
 docs/DESIGN.md          设计文档
+docs/DETAIL.md         插件详情页（英文，单图）
+docs/DETAIL.zh.md      插件详情页（中文，单图）
+docs/preview.svg       详情页配图（640×300，无文字）
 ```
 
 ## 5. DSH 集成点速查（以 0.2.2-rc.2 为准）
@@ -100,6 +110,7 @@ docs/DESIGN.md          设计文档
 | `profileContext` | `home`（DSH home）→ 数据目录 `<home>/integrations/dsh-models-helper/` | `src/host/store.ts` |
 | `agentDefaultModel` | `currentSelection()` / `saveSelection()`：克隆后切换默认模型 | `src/host/actions.ts` |
 | `credentials` | `resolve()` / `set()` / `unset()`：克隆时把原 key 复制到路由自己的 `<ROUTE>_API_KEY` 引用；`route.separateKey` 修复早期共享引用 | `src/host/actions.ts` |
+| `tools` | `register({ name, description, parameters, output: { schema, render }, execute })` 注册模型工具；`tools/pre-execute` 返回 `{ kind: 'ask' }` 由 `ctx.approval` 解析 | `src/host/tools.ts` |
 
 相关 settings namespace：`llm-pi-ai`（所有 pi-ai 供应商，路径 `providers.<routeId>`）与 `models-helper`（本插件，即 Loader 行 id）。
 
@@ -118,6 +129,16 @@ docs/DESIGN.md          设计文档
 | `useSessions()` → `{ byId }` | 会话列表快照；`byId[*].parentId` / `projectionValues` 用于子智能体聚合 |
 
 `package.json` 的 `dsh.client.inject` 列出需要先激活的 Client 包（connection、locale、settings-models、ui-conversation、ui-chat），只用于排序激活，不会被 import。
+
+### 智能体工具（M3）
+
+| 工具 | 作用 | 网络/写入 | 实现 |
+|---|---|---|---|
+| `models_helper_status` | 路由、绑定、模板、缓存时间、默认模型 | 不联网、只读 | `helperStatus` |
+| `models_helper_check` | 单路由或全部检查更新；失败回退缓存 | **每次强制联网**；刷新价格快照 | `bindingDiff` |
+| `models_helper_apply` | 按 `revision` + 推荐/显式选择应用差异 | 写 `llm-pi-ai`；`tools/pre-execute` → `ask` | `bindingApply` |
+
+工具结果是有界投影（见 `tool-summary.ts`），不是原始 `DiffResult`；`apply` 的选择必须落在最近一次 diff 内。审批由 DSH 的 `ctx.approval` 解析，通道缺失或策略为 `never` 时失败关闭。
 
 ### RPC 方法（M1 / M2）
 
@@ -160,6 +181,12 @@ docs/DESIGN.md          设计文档
 16. **`useProjection` 是 slot 的标准 prop，不要自己订阅 `session/event`**：Client 不折叠会话日志；未知 key 返回 `undefined`（能力未挂载或尚无 baseline）。每轮组件用 `turn.turn` 作 key；会话组件用 `useSessions().byId` 的 `parentId` 链找子会话，子会话值来自 summary 投影，缺失时只计入“未就绪”，不要逐个子会话发 RPC。
 17. **金额只从本地价格表算**：单价是 USD / 1M tokens；分段按 `input+cacheRead+cacheWrite` 选档，严格大于阈值才进档；缺 cacheRead/cacheWrite 时按选中档位的 input 计；没有任何价格时显示 `—`，不能显示 0。金额不写入会话日志或数据目录，改价后由 Client 重算。
 
+18. **工具注册不需要 import DSH 包**：`ctx.tools.register` 只要求定义对象带 `name`/`description`/`parameters`/`output`/`execute`；`parameters` 是原生 JSON Schema，`output.render` 返回内容块。结构声明在 `src/host/dsh.ts`。
+19. **`tools/pre-execute` 的 `ask` 是唯一写入门禁**：返回 `{ kind: 'ask', reason, displayReason }` 后由 `tools` 流水线调用 `ctx.approval.request`；`rejected`/`cancelled`/`unavailable`/`policy: never` 都不会执行工具。不要加绕过开关；没有审批通道时失败关闭是预期行为。
+20. **工具结果会进入会话日志与下一次请求**：必须裁剪。`models_helper_check` 只返回计数 + 每路由 20 行/总计 120 行/10 条价格变化，超出显式 `truncated`；不要直接把 `DiffResult` 原样返回。
+21. **`bindingApply` 依赖 Host 内存里的最近一次 diff**：`bindingDiff`/`bindingBind` 成功后才可 apply；插件重载、应用成功或锁变更都会清掉它，必须重新检查。工具与界面共用这条规则。
+22. **错误消息要按 code 本地化**：Host 的 `RpcError.message` 是中文诊断；Client 用 `src/client/errors.ts` 按 `code` 取 `errorCode.*`，未知 code 走通用文案。新增错误码时同步 `src/shared/errors.ts` 与两个 locale 字典（`test/locales.test.ts` 会检查）。
+
 ## 7. 常用命令
 
 ```sh
@@ -182,13 +209,15 @@ pnpm run check        # 以上三步顺序执行；提交前运行
    - 没有浏览器控制时，Host 的状态落在数据目录：`snapshots.json`（模型字段快照）、`prices.json`（价格快照）、`cache/*.meta.json`（来源获取时间与失败原因）；写入结果可直接读 `<DSH_HOME>/profiles/<profile>/cordis.patch.yml` 核对（价格覆盖在插件 Config 的 `priceOverrides` 下）。
    - 会话投影的落盘证据是 `<DSH_HOME>/storages/session_projcache/sessions/<sessionId>.json`：`turn/end` 会写入当前会话的 checkpoint，`record.rows.modelsHelperUsage` 应出现（summary 单元），`modelsHelperTurns` 为 `summary: false` 时同样在 rows 里但不会随会话列表下发。页面未刷新时用它能确认 Host 单元已注册并折叠。
    - 纯逻辑（归一化、合并、差异）一律写 vitest 单测，不依赖 DSH 运行时。
+   - M3 工具：重载 Host 后在新一轮让智能体调用 `models_helper_status`/`models_helper_check`，与界面逐项对比；apply 需把审批策略切回 `ask`，先验证拒绝不写入，再用临时路由验证批准写入并清理。
 5. 测试中改动过的用户状态（如临时供应商）必须恢复。写入测试本身就遵循"增加后立即删除"。
 6. 涉及来源同步的改动要验证两条路径：在线成功（拿到新数据）与失败回退（缓存数据 + 数据获取时间标注）；价格与估算相关改动还要确认渲染路径没有发起来源请求。
 
 ## 9. 编码约定
 
 - RPC：方法名形如 `<领域>.<动作>`，例如 `helper.status`、`binding.diff`。在 `src/shared/rpc.ts` 的 `RpcMethods` 中声明参数和结果类型，在 `src/host/actions.ts` 中实现、`src/host/index.ts` 中注册；业务错误抛 `RpcError(code, message)`，code 统一以 `models-helper/` 为前缀。
-- 一个操作只实现一次，放在 Host；界面和（M3 的）智能体工具调用同一个 Host 方法。
+- 一个操作只实现一次，放在 Host；界面和智能体工具调用同一个 Host 方法。工具的裁剪/选择转换放在边缘，不复制业务逻辑。
+- 新增 RPC 错误码时同步 `src/shared/errors.ts` 和 `src/client/locales.ts` 的 `errorCode.*`；不要让 Client 直接显示 Host 的中文错误消息。
 - 合并引擎、差异计算写成纯函数，输入为 SourceModel、模板模型、绑定和快照，输出期望配置和差异；I/O 留在边缘。
 - 注释说明"为什么"；对 DSH 行为的假设写明出处（README 或源码文件）。
 - 新增文案同时加 zh 和 en；不要硬编码界面字符串。
