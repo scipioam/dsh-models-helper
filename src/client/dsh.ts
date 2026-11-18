@@ -55,3 +55,42 @@ export interface ProviderCardOwnerProps {
   keyConfigured: boolean
   t: Translate
 }
+
+/**
+ * Standard per-Session props every conversation slot receives. Declared here
+ * because the Client bundle cannot import DSH's slot types.
+ */
+export interface ConversationSlotProps {
+  t: Translate
+  /** Stable session id of the slot's Session. */
+  sessionId?: string
+  /** Per-Session projection reader; `undefined` means the key is absent. */
+  useProjection?: <T = unknown>(key: string) => T | undefined
+  /** Session-list snapshot used to aggregate subagent Sessions. */
+  useSessions?: () => SessionListSnapshot
+  useSessionStatus?: () => { running?: boolean; status?: string }
+}
+
+/** One row of the client session list, narrowed to what aggregation needs. */
+export interface SessionSummaryRow {
+  id: string
+  parentId?: string
+  origin?: 'subagent'
+  /**
+   * Summary projection values carried by the list (zero-I/O checkpoint view,
+   * or a live attached-Session block). Keys follow the Host's summary set.
+   */
+  projectionValues?: Record<string, unknown>
+}
+
+export interface SessionListSnapshot {
+  ids?: readonly string[]
+  byId: Record<string, SessionSummaryRow>
+}
+
+/** `conversation.chat.turnTail` owner props. */
+export interface TurnTailOwnerProps extends ConversationSlotProps {
+  turn?: { turn: number; status?: string }
+  seq?: number
+  openFile?: (path: string) => void
+}

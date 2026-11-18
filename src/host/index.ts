@@ -8,6 +8,8 @@
 import Schema from '@deepseek-ai/schemastery'
 import type { HostContext } from './dsh.ts'
 import { resetTemplateCatalog } from './pi-ai.ts'
+import { usageTotalsProjection, usageTurnsProjection } from './usage.ts'
+import { pricesList, setPriceOverride } from './prices.ts'
 import { registerRpc } from './rpc.ts'
 import {
   bindOptions,
@@ -35,6 +37,8 @@ export const name = 'dsh-models-helper'
 export const Config = Schema.object({
   bindings: Schema.dict(Schema.any()).default({}).volatile()
     .description('Custom pi-ai routes bound to a metadata source, keyed by route id.'),
+  priceOverrides: Schema.dict(Schema.dict(Schema.any())).default({}).volatile()
+    .description('Manual unit-price overrides (USD per 1M tokens), keyed by route id and model id.'),
 })
 
 export function apply(ctx: HostContext): void {
@@ -58,7 +62,21 @@ export function apply(ctx: HostContext): void {
       'binding.unbind': args => bindingUnbind(ctx, args),
       'route.separateKey': args => separateKey(ctx, args),
       'defaultModel.use': args => useDefaultModel(ctx, args),
+      'prices.list': () => pricesList(ctx),
+      'prices.setOverride': args => setPriceOverride(ctx, args),
     }, ctx.logger)
     scoped.effect(() => dispose, 'models-helper: rpc route')
+  })
+  // M2: per-turn/per-route token usage for the conversation slots. Registered
+  // under an optional injection so the plugin still loads on compositions
+  // without the projection registry.
+  ctx.inject(['sessionProjections'], (scoped) => {
+    const registry = scoped.get('sessionProjections')
+    if (registry === undefined) return
+    for (const definition of [usageTotalsProjection, usageTurnsProjection]) {
+      void registry.register(definition).catch((error: unknown) => {
+        ctx.logger.warn('models-helper: cannot register projection %s: %s', definition.key, error instanceof Error ? error.message : String(error))
+      })
+    }
   })
 }

@@ -8,10 +8,11 @@
  */
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { CacheEntry, CacheStatus } from '../shared/rpc.ts'
+import type { CacheEntry, CacheStatus, Price } from '../shared/rpc.ts'
 import type { HostContext, SettingsDescriptor } from './dsh.ts'
-import type { Binding, PriceFile, SnapshotFile } from './domain.ts'
+import type { Binding, PriceFile, PriceOverrides, SnapshotFile } from './domain.ts'
 import { LLM_PI_AI_NS } from './domain.ts'
+import { normalizePrice } from '../shared/cost.ts'
 import { readCacheEntry } from './cache.ts'
 import { iso } from './util.ts'
 
@@ -109,6 +110,60 @@ export async function removeBinding(ctx: HostContext, route: string): Promise<vo
   const ns = selfNamespace(ctx)
   if (settings === undefined || ns === undefined) throw new Error('the plugin settings namespace is unavailable')
   await settings.mutate(ns, [{ op: 'unset', path: ['bindings', route] }], descriptor(ctx, ns)?.revision)
+}
+
+// ---------------------------------------------------------------------------
+// Price overrides (plugin Config)
+// ---------------------------------------------------------------------------
+
+/** Read normalized price overrides; malformed entries are ignored. */
+export function readPriceOverrides(ctx: HostContext): PriceOverrides {
+  const ns = selfNamespace(ctx)
+  if (ns === undefined) return {}
+  const value = descriptor(ctx, ns)?.value as { priceOverrides?: unknown } | undefined
+  const raw = value?.priceOverrides
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: PriceOverrides = {}
+  for (const [route, models] of Object.entries(raw)) {
+    if (models === null || typeof models !== 'object' || Array.isArray(models)) continue
+    const perModel: Record<string, Price> = {}
+    for (const [model, price] of Object.entries(models)) {
+      const normalized = normalizePrice(price)
+      if (normalized !== undefined) perModel[model] = normalized
+    }
+    if (Object.keys(perModel).length > 0) out[route] = perModel
+  }
+  return out
+}
+
+/**
+ * Set or clear one model's manual price override in the plugin Config.
+ * @param price - `null` removes the override.
+ */
+export async function writePriceOverride(ctx: HostContext, route: string, model: string, price: unknown | null): Promise<void> {
+  const settings = ctx.get('settings')
+  const ns = selfNamespace(ctx)
+  if (settings === undefined || ns === undefined) throw new Error('the plugin settings namespace is unavailable')
+  // Clearing the last model of a route removes the route object too, so the
+  // profile patch does not accumulate empty maps.
+  const remaining = { ...(readPriceOverrides(ctx)[route] ?? {}) }
+  delete remaining[model]
+  const op = price === null
+    ? Object.keys(remaining).length === 0
+      ? { op: 'unset' as const, path: ['priceOverrides', route] }
+      : { op: 'unset' as const, path: ['priceOverrides', route, model] }
+    : { op: 'set' as const, path: ['priceOverrides', route, model], value: price }
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await settings.mutate(ns, [op], descriptor(ctx, ns)?.revision)
+      return
+    } catch (error) {
+      lastError = error
+      if (!/changed since it was read/.test(error instanceof Error ? error.message : String(error))) throw error
+    }
+  }
+  throw lastError
 }
 
 // ---------------------------------------------------------------------------

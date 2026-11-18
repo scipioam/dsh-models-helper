@@ -9,6 +9,7 @@ import type { ClientContext } from './dsh.ts'
 import { en, NS, zh } from './locales.ts'
 import { Card } from './Card.tsx'
 import { Footer } from './Footer.tsx'
+import { SessionCost, TurnCost } from './Cost.tsx'
 import { PACKAGE_NAME } from '../shared/rpc.ts'
 
 declare global {
@@ -44,6 +45,24 @@ function apply(ctx: ClientContext): void {
     locale: NS,
     inject: () => ({ api }),
   }, Footer))
+
+  // M2 conversation surfaces. `slots.inject` re-registers if the chat UI
+  // mounts late and removes the entries when it unmounts.
+  ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+    name: 'conversation.chat.turnTail',
+    id: 'dsh-models-helper-turn-cost',
+    order: 60,
+    locale: NS,
+    inject: () => ({ api }),
+  }, TurnCost))
+
+  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+    name: 'conversation.session.header.utilities',
+    id: 'dsh-models-helper-session-cost',
+    order: 60,
+    locale: NS,
+    inject: () => ({ api }),
+  }, SessionCost))
 }
 
 window.__ModuleLoader__.load({

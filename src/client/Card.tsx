@@ -12,6 +12,8 @@ import { deriveKeyRef } from '../shared/rpc.ts'
 import { Banner, fmtTime, sourceLabel, Styles, useStatus } from './ui.tsx'
 import { DiffPanel } from './DiffPanel.tsx'
 import { BindPanel, CloneWizard } from './Wizards.tsx'
+import { PriceTable } from './Prices.tsx'
+import { loadPrices } from './prices.ts'
 
 interface CardState {
   kind: 'none' | 'clone' | 'bind' | 'diff'
@@ -106,7 +108,7 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
     else setActionError(result.error.message)
   }
 
-  const refreshLists = async (): Promise<void> => { await reload() }
+  const refreshLists = async (): Promise<void> => { await reload(); await loadPrices(api, true) }
 
   return (
     <div className="dmh-panel" data-dmh-card={provider.provider}>
@@ -182,6 +184,8 @@ export function Card(props: ProviderCardOwnerProps & { api: HelperApi }): ReactE
           </label>
         </div>
       )}
+
+      {declared ? <PriceTable route={provider.provider} api={api} t={t} /> : null}
 
       {confirmUnbind ? (
         <div className="dmh-actions">

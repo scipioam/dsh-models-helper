@@ -119,8 +119,57 @@ export interface HostContext {
   get(name: 'profileContext'): ProfileContext | undefined
   get(name: 'agentDefaultModel'): AgentDefaultModelService | undefined
   get(name: 'credentials'): CredentialsService | undefined
+  get(name: 'sessionProjections'): SessionProjectionRegistry | undefined
   get(name: string): unknown
   effect(callback: () => (() => unknown) | void, label?: string): () => Promise<void>
   inject(deps: string[], callback: (ctx: HostContext) => void): unknown
   on(name: string, listener: (...args: any[]) => unknown): () => void
+}
+
+// ---------------------------------------------------------------------------
+// Session projection registry (`@deepseek-ai/dsh-session-projection`)
+//
+// The registry only calls `stateSchema.parse` / `wire.viewSchema.parse` and
+// invokes `init` / `apply` / `view`, so a plain-JavaScript bundle can pass
+// duck-typed schema objects instead of a zod instance. Shapes mirror the
+// installed 0.2.2-rc.2 source, not a DSH import.
+// ---------------------------------------------------------------------------
+
+/** One committed session event; only `type` and `data` are consumed. */
+export interface SessionEvent {
+  type: string
+  data: unknown
+}
+
+/** Minimal parse face the registry needs from a schema. */
+export interface ProjectionSchema<T> {
+  parse(value: unknown): T
+}
+
+/** Client-visible value declaration of a projection unit. */
+export interface ProjectionWire<T> {
+  viewSchema: ProjectionSchema<T>
+  view(state: T): T
+  /** Whether session summaries carry this key; omitted means true. */
+  summary?: boolean
+}
+
+/** One projection unit definition. */
+export interface SessionProjectionDefinition<T = any> {
+  key: string
+  stateVersion: number
+  stateSchema: ProjectionSchema<T>
+  init(header: unknown, inheritedEventCount: number): T
+  apply(state: T, event: SessionEvent): T
+  wire?: ProjectionWire<T>
+}
+
+export interface ProjectionHandle {
+  dispose(): Promise<void>
+}
+
+/** `ctx.sessionProjections` registry surface used by this plugin. */
+export interface SessionProjectionRegistry {
+  register(definition: SessionProjectionDefinition): Promise<ProjectionHandle>
+  summaryKeys(): ReadonlySet<string>
 }

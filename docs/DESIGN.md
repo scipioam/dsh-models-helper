@@ -41,7 +41,7 @@
   - `openrouter`：OpenRouter 官方 `/api/v1/models`，仅用于 OpenRouter 网关。
 - **模板（Template）**：已安装 pi-ai 目录中的某个内置供应商（如 `opencode-go`），**只**用来补 compat 和推理档位写法。
 - **协议组（Protocol group）**：来源中 `(api, baseURL)` 相同的模型集合；一个协议组对应一条自定义路由。
-- **绑定（Binding）**：一条自定义路由 ↔ `{ source, template, group, autoIncludeNew, priceOverrides, locks }`。
+- **绑定（Binding）**：一条自定义路由 ↔ `{ source, template, group, autoIncludeNew, locks }`；价格覆盖独立存放在插件 Config（`priceOverrides`），绑定对象里的同名字段只为兼容早期配置。
 - **快照（Snapshot）**：上次应用时插件写入的每个模型、每个字段的值，用于识别手改。
 - **价格快照（Price snapshot）**：最近一次克隆或检查更新时从来源取到的单价，连同数据获取时间存数据目录；界面和花费估算只读它，渲染时不联网。
 - **价格覆盖（Price override）**：用户手动改过的单价，存插件配置，优先于快照；清除后回到快照价。
@@ -165,12 +165,17 @@ interface Price {
 - **价格只在显式同步时从网上取**：克隆与检查更新会拉取来源价，写入数据目录下的**价格快照**（含来源价与数据获取时间）；之后界面和估算一律读本地，任何渲染路径都不联网。价格查找（适用于任何路由，不限绑定）：**手动覆盖（插件配置）→ 价格快照 → 模板/内置目录 `cost`（离线兜底）→ 无价格显示 `—`**。
 - **内置路由**：没有绑定来源，使用模板 `cost`（随 DSH 升级变化）；需要跟随来源价时克隆为自定义供应商。手工建的自定义路由同理，可绑定来源后获得价格快照。
 - **金额不持久化**：只持久化 token 用量；Client 每次渲染按当前本地价格表计算金额。修改覆盖、恢复来源价或检查更新刷新快照后，所有已显示的估算立即重算（不刷新页面、不联网）。
-- **单次调用花费** = input×p.in + output×p.out + cacheRead×p.cacheRead + cacheWrite×p.cacheWrite（`TokenUsage` 各项互斥）；分段按 input+cacheRead+cacheWrite 选档；缺 cacheRead/cacheWrite 单价时按 input 单价计。
-- **数据流**：Host 侧 session projection 纯折叠 `assistant/message` 的 usage，按 `(provider, model, tier)` 累计 token（不存金额，保持日志可重放）；经 `wire.view` 交给 Client。Client 持有一份内存价格表（由 Host 的本地价格表经 RPC 取得，价格写入后失效重取），按模型分项算钱。
+- **单次调用花费** = input×p.in + output×p.out + cacheRead×p.cacheRead + cacheWrite×p.cacheWrite（`TokenUsage` 各项互斥）；分段按 input+cacheRead+cacheWrite 选档；缺 cacheRead/cacheWrite 单价时按选中档位的 input 单价计。公式与价格归一化在 `src/shared/cost.ts`（Host 与 Client 共用，纯函数）。
+- **价格覆盖的存放**：手动覆盖写在插件 Config 的顶层 `priceOverrides`（`route → model → Price`），与绑定解耦，因此内置路由与未绑定自定义路由也能改价；`Binding.priceOverrides` 只作为早期配置的兼容读取。
+- **数据流**：Host 侧两个 session projection 单元纯折叠 `assistant/message` / `assistant/attempt` 的 usage，按 `(provider, model)` 累计 token（不存金额，保持日志可重放），经 `wire.view` 交给 Client：
+  - `modelsHelperUsage`：整会话累计，作为 summary key 随会话列表的每一行携带（值很小），供会话标题栏聚合子会话。
+  - `modelsHelperTurns`：按轮次分项，`summary: false`，只在当前附加会话的 baseline/推送里出现，供每轮显示。
+  - 两个单元都按 `(provider, model)` 聚合 token；Client 按合计 prompt 数选分段（单次调用精确，同轮多次跨段为近似，见 §10）。两者都保留最近一次尝试的样本 `last`，同一 `(turn, step)` 的重复结算会替换而不是重复计数；`llm/retry-started` 关闭替换窗口，重试的用量另计。`assistant/attempt`（未产生消息的失败/取消尝试）按最近一次 `request/context` 的路由归属，缺失时记为 `unknown`。
+- **Client 价格表**：一次 `prices.list` RPC 取得所有路由的本地价格（覆盖 → 快照 → 模板 `cost` → 无），共享在 Client 内存中；改价或克隆/绑定/解绑后失效重取。渲染与估算不联网。
 - **显示**：
-  - `conversation.chat.turnTail`：每轮花费，悬停显示 输入/输出/缓存读/缓存写 明细。
-  - `conversation.session.header.utilities`：会话累计（含子智能体会话），点开按模型分项。
-- **子智能体**：通过子会话列表聚合各子会话的投影结果。
+  - `conversation.chat.turnTail`：每轮花费，悬停显示 输入/输出/缓存读/缓存写 明细（`title` 多行文本）。
+  - `conversation.session.header.utilities`：会话累计（含子智能体会话），点开按模型分项；弹层用 `position: fixed` 按锚点定位，避免标题栏裁剪。
+- **子智能体**：会话列表的 `byId` 行带 `parentId` 与 summary 投影值；标题栏按 `parentId` 链递归找到后代会话，把每个子会话的 `modelsHelperUsage.totals` 合并进总账。缺失投影值的子会话单独计数并在明细里提示。
 - **价格表界面**（M2）：卡片内展示每个模型的来源价、覆盖值、数据获取时间与来源；可编辑覆盖、可「恢复来源价」；修改立即写入插件配置并触发全界面重算。
 - **已知限制**：两次手动同步之间来源价的变化不会反映在估算里（价格可能陈旧，用数据获取时间提示用户）；不追溯历史价格。
 
@@ -181,8 +186,10 @@ interface Price {
 | `settings.models.provider-card`（key `llm-pi-ai`）· 内置供应商 | 「克隆为自定义供应商」；来源提示（只用缓存计算，渲染时不联网；无缓存时不显示） |
 | 同上 · 已绑定的自定义供应商 | 来源徽标、上次同步时间、「检查更新」→ 差异面板、价格表（来源价、覆盖、数据获取时间；可覆盖 / 恢复来源价）、字段锁 |
 | 同上 · 未绑定的自定义供应商 | 「绑定参数来源」；价格表（模板价 / 覆盖） |
+| 同上 · 内置供应商（不显示价格表） | 价格仍参与估算，取模板 `cost`；要跟随来源价请克隆 |
 | `settings.models.footer` | 绑定汇总、「全部检查更新」、缓存数据获取时间与「刷新」（只刷新元数据缓存，不改价格快照） |
-| 对话区 | 每轮花费、会话累计（见 §7） |
+| `conversation.chat.turnTail` | 每轮花费（悬停显示输入/输出/缓存明细；无价格显示 `—`） |
+| `conversation.session.header.utilities` | 会话累计（含子智能体；点开按模型分项，弹层按锚点定位） |
 
 UI 遵循宿主主题 token（`--dsw-alias-*`）与 locale，中英文文案；不引用宿主 Client 包组件，控件自绘。
 
@@ -197,16 +204,17 @@ Host（index.js）
 ├─ PriceStore          价格快照（数据目录 prices.json）与手动覆盖（插件配置）← 克隆/检查更新写入（回退时用缓存数据）
 ├─ TemplateCatalog     运行时读取已安装 pi-ai 目录（compat、thinkingLevelMap、cost）
 ├─ MergeEngine         纯函数：SourceModel × 模板 × 绑定 × 快照 → 期望配置 + 差异
-├─ BindingStore        绑定与价格覆盖 → 插件自己的 Config（volatile 字段，settings.mutate 写入 profile 补丁）
+├─ BindingStore        绑定 → 插件自己的 Config（volatile 字段，settings.mutate 写入 profile 补丁）
+├─ PriceStore          价格快照（prices.json）+ 手动覆盖（插件 Config 的 priceOverrides）→ 价格表 RPC
 ├─ SnapshotStore       模型字段快照 → 数据目录 snapshots.json（派生缓存）
 ├─ Writer              settings.mutate('llm-pi-ai', ops, revision)
-├─ CostProjection      sessionProjections 单元 + wire.view（只投影 token，不算钱）
+├─ CostProjection      modelsHelperUsage（summary）+ modelsHelperTurns（attached）两个 sessionProjections 单元 + wire.view（只投影 token，不算钱）
 └─ RPC 端点            供 Client 调用（clone / bind / diff / apply / prices / refresh）
 Client（client.js，esbuild 由 JSX 打包）
 ├─ provider-card 面板 / 克隆向导 / 差异面板 / 价格表（读写同一份本地价格表）
 ├─ footer 汇总
-├─ turnTail、session header 花费显示（按本地价格表实时计算，不联网）
-└─ 内存价格表：价格写入后失效重取，所有估算随之重算
+├─ turnTail、session header 花费显示（useProjection + 本地价格表实时计算，不联网）
+└─ 内存价格表：prices.list 一次取得；改价或路由变更后重取，所有估算随之重算
 ```
 
 **网络边界**：任何页面渲染、差异展示、价格表展示与花费估算都只读本地数据（缓存 / 价格快照 / 插件配置 / 模板），不联网。联网只发生在用户显式动作：克隆、检查更新（含全部检查更新）、页脚「刷新」。页脚刷新只更新元数据缓存，不改价格快照；价格快照只随克隆与检查更新更新。
@@ -222,6 +230,7 @@ Client（client.js，esbuild 由 JSX 打包）
 - **选择器重复**：原内置路由与克隆路由在模型选择器里并存。
 - **删除原路由会删 key（已隔离）**：模型页删除路由会 `credentials.unset` 该路由的引用。M1 起克隆路由使用自己的 `<ROUTE>_API_KEY`（克隆时复制原 key），删除或改键原路由不再影响克隆；早期共享引用的克隆可在卡片上点「创建独立密钥」修复，原路由卡片在其仍被共享时继续提示。
 - **花费为估算**：按本地价格快照计算，不追溯历史价格；不含网关额外费用（如 OpenRouter web search）。
+- **分段价的近似**：投影按 `(turn, provider, model)` 聚合 token，Client 用聚合后的 prompt 数选段。同一轮（或同一会话累计）内多次调用跨越分段阈值时，估算会与逐次选段的结果有偏差；单次调用的轮次是精确的。
 
 ## 11. M0 技术验证结论（2026-11-13，DSH 0.2.2-rc.2）
 
@@ -245,6 +254,16 @@ Client（client.js，esbuild 由 JSX 打包）
 - 开发循环：仓库以 `link:` 方式安装；重建后 Host 端需要一次 Plugin Manager 操作（停用再启用本插件包）触发重组，Client 端需要刷新页面（详见 [AGENTS.md](../AGENTS.md) §8）。
 - 价格与来源数据只在显式同步动作时联网（§5.1、§7、§9）：M2 的投影与花费显示不能从渲染路径触发来源请求；检查更新的失败回退必须把数据获取时间一并带回 Client 展示。
 - 尚未验证（留到对应里程碑）：`agentDefaultModel.saveSelection()`（M1）、session projection + `wire.view` 与对话区 slot（M2）、智能体工具与审批（M3）。
+
+## 11.1 M2 运行验证（2026-11-18，DSH 0.2.2-rc.2）
+
+| 问题 | 结论 |
+|---|---|
+| plain JS 插件能否注册 session projection | ✅ `ctx.inject(['sessionProjections'], …)` 后 `register(definition)` 成功；注册表只调用 `stateSchema.parse` / `wire.viewSchema.parse`，`{ parse }` 结构对象即可，不需要 zod |
+| `wire.view` 是否让值进入会话列表 summary | ✅ `summaryKeys()` 出现 `modelsHelperUsage`；`modelsHelperTurns` 声明 `summary: false`，未进入列表（避免每行携带全部轮次） |
+| `prices.list` 的真实数据 | ✅ 内置 `opencode-go` 32 个模型取模板价；绑定路由（`openrouter-custom` 24 个、四个 opencode-go 协议组）取价格快照并带获取时间；只返回已配置/有绑定的路由，避免把整套目录下发 |
+| 投影折叠是否与 DSH 统计一致 | ✅ 与 `tokenUsage` 逐桶相同（本会话实测 input 281,949 / output 121,044 / cacheRead 28,790,400 / cacheWrite 0），每轮单元同时含 turn 1 / turn 2 |
+| 对话区 slot 与 Client 渲染 | ✅ 用户确认（2026-11-18）：价格表可改价/恢复来源价；每轮与会话花费正常显示、点开有分项；金额与手算一致 |
 
 ## 12. 里程碑
 

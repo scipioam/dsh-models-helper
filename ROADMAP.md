@@ -8,7 +8,7 @@
 |---|---|---|
 | **M0** | 技术验证：确认设计依赖的 DSH 接口都可用 | ✅ 已完成（2026-11-13） |
 | **M1** | 克隆内置供应商、绑定参数来源、检查更新与应用 | ✅ 已完成（2026-11-17） |
-| **M2** | 价格表与花费估算（每轮、会话、含子智能体） | ⏳ 未开始 |
+| **M2** | 价格表与花费估算（每轮、会话、含子智能体） | ✅ 已完成（2026-11-18） |
 | **M3** | 智能体工具、打磨与发布 | ⏳ 未开始 |
 | 后续 | v1 之外的候选功能 | 💭 待评估 |
 
@@ -82,7 +82,7 @@
 
 ---
 
-## M2 · 价格与花费 ⏳ 未开始
+## M2 · 价格与花费 ✅
 
 **目标**：每个模型都有可查、可改的单价；对话界面能看到每一轮和整个会话（含子智能体）的估算花费。
 
@@ -90,13 +90,13 @@
 
 | # | 任务 | 状态 |
 |---|---|---|
-| 1 | 价格表与本地价格快照：手动覆盖 → 快照（克隆/检查更新写入）→ 模板 `cost`（离线兜底）；内置路由用模板价；支持按上下文分段；价格快照只随克隆/检查更新刷新 | 未开始 |
-| 2 | 价格表界面：在供应商卡片内展示来源价、覆盖值与数据获取时间，可编辑与恢复来源价；修改后估算立即重算 | 未开始 |
-| 3 | Host 会话投影：折叠 `assistant/message` 的用量，按 (provider, model, tier) 累计 token，经 `wire.view` 交给 Client（**需先验证**） | 未开始 |
-| 4 | 每轮花费：`conversation.chat.turnTail`，悬停显示明细；按本地价格表实时计算，不联网 | 未开始 |
-| 5 | 会话累计：`conversation.session.header.utilities`，点开按模型分项；按本地价格表实时计算，不联网 | 未开始 |
-| 6 | 子智能体聚合 | 未开始 |
-| 7 | 单元测试：计费公式、分段选择、缺失单价的回退 | 未开始 |
+| 1 | 价格表与本地价格快照：手动覆盖 → 快照（克隆/检查更新写入）→ 模板 `cost`（离线兜底）；内置路由用模板价；支持按上下文分段；价格快照只随克隆/检查更新刷新 | 已完成 |
+| 2 | 价格表界面：在供应商卡片内展示来源价、覆盖值与数据获取时间，可编辑与恢复来源价；修改后估算立即重算 | 已完成 |
+| 3 | Host 会话投影：折叠 `assistant/message` / `assistant/attempt` 的用量，按 (provider, model) 累计 token，经 `wire.view` 交给 Client（分段由 Client 按本地价格选档，见 DESIGN §10 的近似说明） | 已完成 |
+| 4 | 每轮花费：`conversation.chat.turnTail`，悬停显示明细；按本地价格表实时计算，不联网 | 已完成 |
+| 5 | 会话累计：`conversation.session.header.utilities`，点开按模型分项；按本地价格表实时计算，不联网 | 已完成 |
+| 6 | 子智能体聚合 | 已完成 |
+| 7 | 单元测试：计费公式、分段选择、缺失单价的回退 | 已完成 |
 
 **验收标准**
 
@@ -107,7 +107,17 @@
 - 没有价格的模型显示 `—`，不显示为 0。
 - 同一会话重新打开或刷新页面后，数字保持不变（只依赖会话日志与本地价格表）。
 
-**待验证**：plain JS 插件能否注册 session projection 并声明 `wire.view`；两个会话级 slot 的 props；读取子会话列表的方式。
+**实现备注（2026-11-18）**
+
+- 已确认（读安装源码）：plain JS 插件可通过 `ctx.inject(['sessionProjections'])` 注册单元；注册表只调用 `stateSchema.parse` / `wire.viewSchema.parse`，因此用 `{ parse }` 结构类型即可，不必引入 zod；`wire.view` 让值经 baseline/`session/projection` 帧到达 Client，slot 标准 props 提供 `useProjection`。
+- 用量拆成两个单元：`modelsHelperUsage`（整会话累计，summary 可见，供列表行携带并聚合子智能体）与 `modelsHelperTurns`（按轮明细，`summary: false`，只给当前会话）。
+- 价格覆盖改为插件 Config 顶层 `priceOverrides`（route → model），与绑定解耦，内置/未绑定路由也能改价；`Binding.priceOverrides` 仅兼容读取。
+- 已在运行中的 DSH 0.2.2-rc.2 上完成 Host 侧验证（2026-11-18）：
+  - 两个投影单元注册成功；`summaryKeys()` 只包含 `modelsHelperUsage`，`modelsHelperTurns` 因 `summary: false` 未进入会话列表（临时探针已删除）。
+  - 折叠结果与 DSH 自带的 `tokenUsage` 投影逐桶完全一致（本会话实测：input 281,949 / output 121,044 / cacheRead 28,790,400 / cacheWrite 0），`modelsHelperTurns` 同时有 turn 1、turn 2 两轮数据；按本地价（deepseek-v4.1-flash：0.15/0.6/0.003）手算期望值：turn 1 ≈ $0.2001，turn 2 ≈ $0.0052，会话 ≈ $0.2053。
+  - `prices.list` 在真实配置上返回 7 条路由：内置 `opencode-go` 32 个模型全部取模板价；4 条克隆路由与 `openrouter-custom` 取价格快照并带获取时间；目录中的其余内置供应商不再返回（只保留已配置或有绑定的路由）。
+- 界面验证（2026-11-18，用户确认）：自定义供应商卡片的价格表正常显示，可改价与恢复来源价；对话每轮下方显示「本轮花费」，会话标题栏显示「会话花费」并可点开按模型分项；金额与 Host 侧手算值一致。
+- 纯逻辑（预算、子会话聚合、投影值收窄）由 `test/cost-view.test.ts` 覆盖；`pnpm run check` 通过（tsc + 111 个测试 + esbuild）。
 
 ---
 

@@ -6,7 +6,7 @@
 
 ## 1. 一句话
 
-一个 DSH **bundle**，包含 Host 插件和 Web Client 插件：从 models.dev / OpenRouter 拉取模型元数据，结合 DSH 自带的 pi-ai 模型目录（作为 compat 与推理档位的模板），生成或更新 `llm-pi-ai` 中的自定义供应商配置；并依据会话用量估算花费。当前处于 **M1 已完成（2026-11-17）**：克隆、绑定更新来源、检查更新、字段锁、默认模型切换都已实现并通过运行中冒烟验证，M0 探针与 `probe-results/` 已清理。
+一个 DSH **bundle**，包含 Host 插件和 Web Client 插件：从 models.dev / OpenRouter 拉取模型元数据，结合 DSH 自带的 pi-ai 模型目录（作为 compat 与推理档位的模板），生成或更新 `llm-pi-ai` 中的自定义供应商配置；并依据会话用量估算花费。当前处于 **M2 已完成（2026-11-18）**：M1 的克隆/绑定/检查更新/字段锁/默认模型切换，以及 M2 的本地价格表、改价、每轮与会话（含子智能体）花费估算都已实现并通过运行中冒烟验证。M0 探针与 `probe-results/` 已清理。
 
 ## 2. 必读顺序
 
@@ -46,7 +46,8 @@ lib/                    构建产物（入库）
 scripts/build.mjs       esbuild：先 Host 后 Client，顺序执行
 vitest.config.ts        单 fork、文件串行、无测试文件时通过
 pnpm-workspace.yaml     不运行 esbuild 的安装脚本
-src/shared/rpc.ts       前后端共用的 RPC 约定：endpoint 常量、M1 方法表及其参数/结果类型
+src/shared/rpc.ts       前后端共用的 RPC 约定：endpoint 常量、方法表、价格/用量类型与投影 key
+src/shared/cost.ts      纯计费公式：分段选档、缓存价回退、价格归一化、金额/Token 格式化
 src/host/
   index.ts              Host 入口：导出 name / Config / apply；在 connection 可用时注册 RPC 方法
   rpc.ts                精确 Fetch 路由 /api/dsh-models-helper/rpc，说 Connection 的 client-request/server-response 信封
@@ -58,7 +59,11 @@ src/host/
   pi-ai.ts              在运行时定位并加载已安装的 pi-ai 目录（模板）
   sources.ts            models.dev / OpenRouter 的读取与归一化为 SourceModel（带 online 标记）
   cache.ts              条件请求磁盘缓存（ETag/Last-Modified）；失败才回退旧副本并记录原因
-  store.ts              绑定（插件 Config）、模型字段快照与价格快照（数据目录 JSON）、缓存状态
+  routes.ts             llm-pi-ai 配置的读取视图（effective/profile、路由目录、模型）
+  store.ts              绑定与价格覆盖（插件 Config）、模型字段快照与价格快照（数据目录 JSON）、缓存状态
+  prices.ts             价格表：覆盖 → 快照 → 模板 cost 的解析、prices RPC
+  usage.ts              两个 session projection 单元（总量 / 每轮）与 wire 视图
+  usage-math.ts         带符号的用量增量运算
   actions.ts            用户操作的唯一实现：status / clone / bind / diff / apply / lock / unbind / cache / defaultModel
 src/client/
   index.tsx             Client 入口：window.__ModuleLoader__.load({ id, factory })，注册 locale 与 slot
@@ -70,10 +75,14 @@ src/client/
   runtime.ts            React live binding
   api.ts                Host RPC 的类型化调用封装（传输错误折叠为 { ok: false }）
   dsh.ts                Client 侧 DSH 服务与 slot owner props 的结构类型
+  prices.ts             Client 共享内存价格表（prices.list + 改价后失效重取）
+  Cost.tsx              每轮（turnTail）与会话（header utilities）花费显示
+  cost-view.ts          花费显示的纯逻辑：预算、子会话聚合、投影值收窄
+  Prices.tsx            供应商卡片内的价格表与内联改价
   locales.ts            zh / en 词典
   styles.ts             组件内样式（只用主题 token）
-test/                   vitest 单元测试：merge/diff/sources/normalize/cache/apply/actions，
-                        host-fixture.ts 提供内存版 HostContext
+test/                   vitest 单元测试：merge/diff/sources/normalize/cache/apply/actions/
+                        prices/usage/cost/cost-view，host-fixture.ts 提供内存版 HostContext
 docs/DESIGN.md          设计文档
 ```
 
@@ -103,11 +112,14 @@ docs/DESIGN.md          设计文档
 | `slots.inject(name, () => slots.register(options, Component))` | slot 消失时自动撤销、恢复时自动重装 |
 | `settings.models.provider-card`（keyed，key=`llm-pi-ai`） | 每张 pi-ai 供应商卡片内的扩展区；owner props：`provider`（含 `provider` 路由 id、`declared`、`displayName`…）、`configured`、`keyConfigured` |
 | `settings.models.footer`（list） | 模型页底部扩展区：绑定汇总、全部检查更新、来源缓存 |
-| 计划使用：`conversation.chat.turnTail`、`conversation.session.header.utilities` | M2 的每轮花费与会话累计 |
+| `conversation.chat.turnTail`（list，id=`dsh-models-helper-turn-cost`） | 每轮花费；owner 给 `turn`，标准 props 含 `useProjection` / `sessionId` / `useSessions` |
+| `conversation.session.header.utilities`（list，id=`dsh-models-helper-session-cost`） | 会话累计（含子智能体）；点开按模型分项，弹层按锚点 `position: fixed` |
+| `useProjection(key)` | 读取本会话的客户端可见投影值（baseline + `session/projection` 推送），未知 key 返回 `undefined` |
+| `useSessions()` → `{ byId }` | 会话列表快照；`byId[*].parentId` / `projectionValues` 用于子智能体聚合 |
 
-`package.json` 的 `dsh.client.inject` 列出需要先激活的 Client 包（connection、locale、settings-models），只用于排序激活，不会被 import。
+`package.json` 的 `dsh.client.inject` 列出需要先激活的 Client 包（connection、locale、settings-models、ui-conversation、ui-chat），只用于排序激活，不会被 import。
 
-### RPC 方法（M1）
+### RPC 方法（M1 / M2）
 
 | 方法 | 作用 | 网络/写入 |
 |---|---|---|
@@ -121,6 +133,8 @@ docs/DESIGN.md          设计文档
 | `binding.setAutoInclude` | 切换「自动纳入新模型」：检查更新时新模型默认勾选/仅候选 | 写插件配置 |
 | `route.separateKey` | 把路由的共享凭据复制到自己的 `<ROUTE>_API_KEY` 并改引用 | 写凭据与 `llm-pi-ai` |
 | `defaultModel.use` | 切换默认模型（`agentDefaultModel.saveSelection`） | 写 profile |
+| `prices.list` | 所有路由的本地价格表：每个模型解析出的价格与来源（覆盖/快照/模板） | 不联网、只读 |
+| `prices.setOverride` | 设置或清除某模型的手动单价（`price: null` 恢复来源价） | 写插件配置 |
 
 ### pi-ai 模板加载
 
@@ -142,6 +156,9 @@ docs/DESIGN.md          设计文档
 12. **检查更新每次都强制联网**（条件请求，304 也算成功），失败才回退缓存并标注数据获取时间与失败原因；不能因缓存未过期而跳过请求；无缓存时只报错、不生成差异。
 13. **快照只记录实际写入路由的模型**。快照里有、路由里没有 = 用户手动删除，差异计算要隐藏而不是当“新增”重新提议；没有快照但路由已有的模型（首次绑定或模型页手动新增）要按字段判断：未设置字段可补全，已设置值按冲突处理。
 14. **`autoIncludeNew` 只影响检查更新中新模型的分类**（新增默认勾选 vs 候选默认不勾选），不影响克隆时勾选的模型；克隆后可在卡片上切换。
+15. **会话投影必须用可选注入注册**：`ctx.inject(['sessionProjections'], scoped => registry.register(def))`，缺失注册表的组合（CLI 等）不能因此加载失败。`stateSchema` / `wire.viewSchema` 只需要 `{ parse }`（注册表内部按 `ZodType` 擦除后调用 `.parse`），不必引入 zod；`stateVersion` 在状态字段或折叠语义变化时递增；`state` 必须是纯 JSON。`wire.summary` 默认 true（随会话列表的每一行下发），每轮明细必须显式 `summary: false`，否则列表要携带每个会话的全部轮次。
+16. **`useProjection` 是 slot 的标准 prop，不要自己订阅 `session/event`**：Client 不折叠会话日志；未知 key 返回 `undefined`（能力未挂载或尚无 baseline）。每轮组件用 `turn.turn` 作 key；会话组件用 `useSessions().byId` 的 `parentId` 链找子会话，子会话值来自 summary 投影，缺失时只计入“未就绪”，不要逐个子会话发 RPC。
+17. **金额只从本地价格表算**：单价是 USD / 1M tokens；分段按 `input+cacheRead+cacheWrite` 选档，严格大于阈值才进档；缺 cacheRead/cacheWrite 时按选中档位的 input 计；没有任何价格时显示 `—`，不能显示 0。金额不写入会话日志或数据目录，改价后由 Client 重算。
 
 ## 7. 常用命令
 
@@ -162,7 +179,8 @@ pnpm run check        # 以上三步顺序执行；提交前运行
 3. **之后**：停用再启用插件包，让 Host 加载新代码；刷新页面，让 Client 加载新代码。
 4. 验证手段（按优先级）：
    - 有浏览器控制时直接看页面；没有时用 Cordis inspect（`Slots.listSubTree` 看 slot 是否被占用，`Config.listConfigs` 看 Loader 行），并请用户操作。
-   - 没有浏览器控制时，Host 的状态落在数据目录：`snapshots.json`（模型字段快照）、`prices.json`（价格快照）、`cache/*.meta.json`（来源获取时间与失败原因）；写入结果可直接读 `<DSH_HOME>/profiles/<profile>/cordis.patch.yml` 核对。
+   - 没有浏览器控制时，Host 的状态落在数据目录：`snapshots.json`（模型字段快照）、`prices.json`（价格快照）、`cache/*.meta.json`（来源获取时间与失败原因）；写入结果可直接读 `<DSH_HOME>/profiles/<profile>/cordis.patch.yml` 核对（价格覆盖在插件 Config 的 `priceOverrides` 下）。
+   - 会话投影的落盘证据是 `<DSH_HOME>/storages/session_projcache/sessions/<sessionId>.json`：`turn/end` 会写入当前会话的 checkpoint，`record.rows.modelsHelperUsage` 应出现（summary 单元），`modelsHelperTurns` 为 `summary: false` 时同样在 rows 里但不会随会话列表下发。页面未刷新时用它能确认 Host 单元已注册并折叠。
    - 纯逻辑（归一化、合并、差异）一律写 vitest 单测，不依赖 DSH 运行时。
 5. 测试中改动过的用户状态（如临时供应商）必须恢复。写入测试本身就遵循"增加后立即删除"。
 6. 涉及来源同步的改动要验证两条路径：在线成功（拿到新数据）与失败回退（缓存数据 + 数据获取时间标注）；价格与估算相关改动还要确认渲染路径没有发起来源请求。

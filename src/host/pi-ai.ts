@@ -48,6 +48,10 @@ export interface TemplateCatalog {
   providers(): string[]
   /** Chat models of one provider; empty for an unknown provider. */
   models(provider: string): PiAiModel[]
+  /** One chat model of one provider, if installed. */
+  findModel(provider: string, id: string): PiAiModel | undefined
+  /** One chat model found under any installed provider (offline price fallback). */
+  findModelByAnyProvider(id: string): PiAiModel | undefined
 }
 
 interface ProvidersAllModule {
@@ -130,16 +134,38 @@ export function loadTemplateCatalog(ctx: HostContext): Promise<TemplateCatalog> 
       throw new Error(`${file} does not export builtinProviders/getBuiltinModels`)
     }
     const all = mod as ProvidersAllModule
+    // Lazy indexes shared by every price-table call in this catalog generation.
+    const byProvider = new Map<string, Map<string, PiAiModel>>()
+    const anywhere = new Map<string, PiAiModel>()
+    const chatModels = (provider: string): PiAiModel[] => {
+      try {
+        return all.getBuiltinModels(provider).filter(model => model.type === undefined || model.type === 'chat')
+      } catch {
+        return []
+      }
+    }
+    const index = (provider: string): Map<string, PiAiModel> => {
+      let models = byProvider.get(provider)
+      if (models === undefined) {
+        models = new Map(chatModels(provider).map(model => [model.id, model]))
+        byProvider.set(provider, models)
+        for (const model of models.values()) if (!anywhere.has(model.id)) anywhere.set(model.id, model)
+      }
+      return models
+    }
     return {
       version,
       location: file,
       providers: () => all.builtinProviders().map(provider => provider.id),
-      models: (provider) => {
-        try {
-          return all.getBuiltinModels(provider).filter(model => model.type === undefined || model.type === 'chat')
-        } catch {
-          return []
+      models: chatModels,
+      findModel: (provider, id) => index(provider).get(id),
+      findModelByAnyProvider: (id) => {
+        if (anywhere.has(id)) return anywhere.get(id)
+        for (const provider of all.builtinProviders()) {
+          const hit = index(provider.id).get(id)
+          if (hit !== undefined) return hit
         }
+        return undefined
       },
     }
   })().catch((error: unknown) => {

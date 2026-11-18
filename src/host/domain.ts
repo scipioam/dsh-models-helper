@@ -166,6 +166,13 @@ export interface PriceFile {
   routes: Record<string, RoutePrices>
 }
 
+/**
+ * Manual price overrides stored in the plugin Config, keyed by route → model.
+ * Independent of bindings so a built-in or unbound custom route can also be
+ * priced; `Binding.priceOverrides` remains a legacy fallback.
+ */
+export type PriceOverrides = Record<string, Record<string, Price>>
+
 /** Key `modelId/field` used by locks. */
 export function lockKey(model: string, field: ModelFieldName): string {
   return `${model}/${field}`

@@ -4,6 +4,7 @@ import type { HostContext, LlmConfigurableProvider, SettingsDescriptor, Settings
 export interface FakeHostState {
   providers: Record<string, Record<string, unknown>>
   bindings: Record<string, Record<string, unknown>>
+  priceOverrides: Record<string, Record<string, unknown>>
   credentials: Map<string, string>
   revision: number
   mutateCalls: { ns: string; ops: readonly SettingsPathOp[] }[]
@@ -14,6 +15,7 @@ export interface FakeHostOptions {
   home: string
   providers?: Record<string, Record<string, unknown>>
   bindings?: Record<string, Record<string, unknown>>
+  priceOverrides?: Record<string, Record<string, unknown>>
   credentials?: Record<string, string>
   /** Route ids reported as hand-declared (`declared: true`). */
   declared?: string[]
@@ -50,6 +52,7 @@ export function makeHost(options: FakeHostOptions): { ctx: HostContext; state: F
   const state: FakeHostState = {
     providers: clone(options.providers ?? {}),
     bindings: clone(options.bindings ?? {}),
+    priceOverrides: clone(options.priceOverrides ?? {}),
     credentials: new Map(Object.entries(options.credentials ?? {})),
     revision: 1,
     mutateCalls: [],
@@ -58,7 +61,7 @@ export function makeHost(options: FakeHostOptions): { ctx: HostContext; state: F
   const declared = new Set(options.declared ?? [])
   const rows = (): { llm: Record<string, unknown>; helper: Record<string, unknown> } => ({
     llm: { ns: 'llm-pi-ai', providers: Object.keys(state.providers).length === 0 ? undefined : state.providers },
-    helper: { bindings: state.bindings },
+    helper: { bindings: state.bindings, priceOverrides: state.priceOverrides },
   })
   const descriptor = (ns: string): SettingsDescriptor | undefined => {
     const current = rows()
@@ -82,7 +85,7 @@ export function makeHost(options: FakeHostOptions): { ctx: HostContext; state: F
       state.mutateCalls.push({ ns, ops })
       const target = ns === 'llm-pi-ai'
         ? { providers: state.providers } as Record<string, unknown>
-        : { bindings: state.bindings } as Record<string, unknown>
+        : { bindings: state.bindings, priceOverrides: state.priceOverrides } as Record<string, unknown>
       for (const op of ops) {
         if (op.op === 'set') setPath(target, op.path, op.value)
         else unsetPath(target, op.path)

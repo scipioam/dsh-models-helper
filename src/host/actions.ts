@@ -8,7 +8,7 @@
  * result carries the data's real fetch time plus the failure reason.
  */
 import { join } from 'node:path'
-import type { CredentialsService, HostContext, LlmConfigurableProvider, SettingsPathOp } from './dsh.ts'
+import type { CredentialsService, HostContext, SettingsPathOp } from './dsh.ts'
 import type {
   ApplyArgs,
   ApplyResult,
@@ -46,7 +46,7 @@ import { normalizeBaseURL, readModelsDev, readOpenRouter, type SourceModel } fro
 import { planGroup } from './merge.ts'
 import { computeDiff, type ComputedDiff } from './diff.ts'
 import { applySelection } from './apply.ts'
-import type { Binding, ModelFields, PriceFile, RawLlmConfig, RawModel, RawProfile, SnapshotFile } from './domain.ts'
+import type { Binding, ModelFields, PriceFile, RawModel, SnapshotFile } from './domain.ts'
 import { definedFields, LLM_PI_AI_NS, lockKey, modelFieldsOf } from './domain.ts'
 import {
   dataDir,
@@ -55,6 +55,7 @@ import {
   readBindings,
   readCacheStatus,
   readPriceFile,
+  readPriceOverrides,
   readSnapshotFile,
   removeBinding,
   selfNamespace,
@@ -63,6 +64,8 @@ import {
   writeSnapshotFile,
 } from './store.ts'
 import { RpcError } from './rpc.ts'
+import { overrideFor } from './prices.ts'
+import { apiKeyEnvOf, effectiveConfig, effectiveProfile, isDeclared, routeDirectory, routeIds, userModels } from './routes.ts'
 import { deepEqual, errorText, iso } from './util.ts'
 
 const PROTOCOLS: readonly Protocol[] = ['anthropic-messages', 'openai-completions', 'openai-responses', 'google-generative-ai']
@@ -98,43 +101,6 @@ function need<T>(value: T | undefined, message: string): T {
 // ---------------------------------------------------------------------------
 // Settings / route views
 // ---------------------------------------------------------------------------
-
-function effectiveConfig(ctx: HostContext): RawLlmConfig {
-  return (llmDescriptor(ctx)?.value ?? {}) as RawLlmConfig
-}
-
-function userConfig(ctx: HostContext): RawLlmConfig {
-  return (llmDescriptor(ctx)?.user ?? {}) as RawLlmConfig
-}
-
-function effectiveProfile(ctx: HostContext, route: string): RawProfile | undefined {
-  return effectiveConfig(ctx).providers?.[route]
-}
-
-function userProfile(ctx: HostContext, route: string): RawProfile | undefined {
-  return userConfig(ctx).providers?.[route]
-}
-
-function routeDirectory(ctx: HostContext): Map<string, LlmConfigurableProvider> {
-  const rows = ctx.get('llm')?.listConfigurableProviders() ?? []
-  return new Map(rows.filter(row => row.settingsNs === LLM_PI_AI_NS).map(row => [row.provider, row]))
-}
-
-function isDeclared(ctx: HostContext, route: string): boolean {
-  return routeDirectory(ctx).get(route)?.declared === true
-}
-
-function userModels(ctx: HostContext, route: string): RawModel[] {
-  const models = userProfile(ctx, route)?.models
-  return Array.isArray(models) ? models.filter((model): model is RawModel => model !== null && typeof model === 'object' && typeof (model as RawModel).id === 'string') : []
-}
-
-/** Credential reference of a route: its effective value, else the model-page derivation. */
-function apiKeyEnvOf(ctx: HostContext, route: string): string | undefined {
-  const fromRoute = effectiveProfile(ctx, route)?.apiKeyEnv
-  if (typeof fromRoute === 'string' && fromRoute.length > 0) return fromRoute
-  return deriveKeyRef(route)
-}
 
 /** Resolve a credential reference to its current value, or undefined when absent/unreadable. */
 async function resolveCredential(credentials: CredentialsService, ref: string): Promise<string | undefined> {
@@ -280,7 +246,7 @@ export async function helperStatus(ctx: HostContext): Promise<HelperStatus> {
   const effective = effectiveConfig(ctx)
   const directory = routeDirectory(ctx)
   const bindings = readBindings(ctx)
-  const ids = new Set<string>([...Object.keys(effective.providers ?? {}), ...directory.keys()])
+  const ids = routeIds(ctx)
   const routes: RouteInfo[] = []
   const routeKeyEnv = new Map<string, string | undefined>()
   for (const id of ids) routeKeyEnv.set(id, apiKeyEnvOf(ctx, id))
@@ -763,6 +729,7 @@ async function checkBinding(
   })
 
   const oldPrices = prices.routes[binding.route]?.models ?? {}
+  const overrides = readPriceOverrides(ctx)
   const nextPrices: Record<string, Price> = {}
   const priceChanges: BindingDiff['priceChanges'] = []
   for (const model of plan.models) {
@@ -771,7 +738,7 @@ async function checkBinding(
     nextPrices[model.id] = price
     const old = oldPrices[model.id]
     if (old !== undefined && !deepEqual(old, price)) {
-      priceChanges.push({ id: model.id, old, new: price, overridden: binding.priceOverrides[model.id] !== undefined })
+      priceChanges.push({ id: model.id, old, new: price, overridden: overrideFor(overrides, binding, binding.route, model.id) !== undefined })
     }
   }
   const nextPricesFile: PriceFile = {
